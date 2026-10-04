@@ -1,0 +1,69 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+
+default_language_version:
+    python: python3.12
+
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-yaml
+    -   id: check-toml
+    -   id: check-added-large-files
+    -   id: check-merge-conflict
+    -   id: detect-private-key
+    -   id: mixed-line-ending
+    -   id: check-case-conflict
+
+-   repo: https://github.com/rhysd/actionlint
+    rev: v1.7.11
+    hooks:
+    -   id: actionlint
+
+# This repository provides the `python_uv` language definition.
+-   repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.9.18
+    hooks:
+    -   id: uv-lock
+
+# Local hooks delegate to the uv-managed project environment so
+# pre-commit and CI resolve the same tool versions.
+-   repo: local
+    hooks:
+    -   id: version-bump
+        name: ensure patch version bump
+        entry: uv run python scripts/ensure_patch_version_bump.py
+        language: system
+        pass_filenames: false
+        always_run: true
+
+    -   id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix .
+        language: system
+        pass_filenames: false
+        files: '^(src|tests|scripts)/.*\.py$'
+
+    -   id: ruff-format
+        name: ruff format
+        entry: uv run ruff format .
+        language: system
+        pass_filenames: false
+        files: '^(src|tests|scripts)/.*\.py$'
+
+    -   id: mypy
+        name: mypy
+        entry: uv run mypy .
+        language: system
+        pass_filenames: false
+        files: '^(src|tests|scripts)/.*\.py$'
+
+    -   id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        pass_filenames: false
+        files: '^(src|tests|scripts)/.*\.py$'
