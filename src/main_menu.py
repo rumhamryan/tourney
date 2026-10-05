@@ -73,6 +73,7 @@ class MainMenu(QDialog):
         self.pages.setContentsMargins(0, 0, 0, 0)
         self.pages.addWidget(self.menu_page)
         self.pages.addWidget(self.player_entry)
+        self.setMinimumSize(self.minimumSize().expandedTo(self.pages.minimumSize()))
 
     @Slot()
     def _select_single(self) -> None:

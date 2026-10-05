@@ -9,12 +9,17 @@ uv run python src/main_menu.py
 ```
 
 The menu offers Single Elimination, Double Elimination, and Exit. Choosing
-a format opens player entry. Type a name and press Enter or click Add.
+a format opens tournament setup. Set Number of tables using the arrows or
+type a positive whole number; it defaults to one. Type a name and press Enter or click Add.
 Select a player and click Remove Selected, or press Delete while the player
 list has focus. Blank names are rejected, and the limit is 32 players.
 Repeated names are allowed.
 
-Back to Menu preserves both the player list and any unfinished name, including
+Start becomes available after adding at least two players and leaving no name
+waiting to be added. Clicking it confirms the chosen format, player count,
+and number of tables. The bracket screen will be connected in the next UI step.
+
+Back to Menu preserves the table count, player list, and any unfinished name, including
 when choosing a different format. Names are held in memory for the current
 session; saving and bracket creation from this screen will be added separately.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
