@@ -9,8 +9,15 @@ uv run python src/main_menu.py
 ```
 
 The menu offers Single Elimination, Double Elimination, and Exit. Choosing
-a format displays the selection; tournament setup will be added separately.
-Use Tab or Shift+Tab to move between buttons and Enter or Space to activate
+a format opens player entry. Type a name and press Enter or click Add.
+Select a player and click Remove Selected, or press Delete while the player
+list has focus. Blank names are rejected, and the limit is 32 players.
+Repeated names are allowed.
+
+Back to Menu preserves both the player list and any unfinished name, including
+when choosing a different format. Names are held in memory for the current
+session; saving and bracket creation from this screen will be added separately.
+Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
 
 Run the UI checks without opening a desktop window:

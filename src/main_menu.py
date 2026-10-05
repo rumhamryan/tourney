@@ -3,7 +3,17 @@
 import sys
 
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton, QVBoxLayout
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QLabel,
+    QPushButton,
+    QStackedLayout,
+    QVBoxLayout,
+    QWidget,
+)
+
+from player_entry import PlayerEntry
 
 
 class MainMenu(QDialog):
@@ -41,7 +51,8 @@ class MainMenu(QDialog):
         self.single_button.setFocus()
 
     def _build_layout(self, title: QLabel, subtitle: QLabel) -> None:
-        layout = QVBoxLayout(self)
+        self.menu_page = QWidget()
+        layout = QVBoxLayout(self.menu_page)
         layout.setContentsMargins(28, 28, 28, 28)
         layout.setSpacing(12)
         layout.addStretch()
@@ -56,6 +67,12 @@ class MainMenu(QDialog):
         layout.addStretch()
         self.setTabOrder(self.single_button, self.double_button)
         self.setTabOrder(self.double_button, self.exit_button)
+        self.player_entry = PlayerEntry()
+        self.player_entry.back_requested.connect(self._show_menu)
+        self.pages = QStackedLayout(self)
+        self.pages.setContentsMargins(0, 0, 0, 0)
+        self.pages.addWidget(self.menu_page)
+        self.pages.addWidget(self.player_entry)
 
     @Slot()
     def _select_single(self) -> None:
@@ -67,7 +84,17 @@ class MainMenu(QDialog):
 
     def _select_format(self, tournament_format: str) -> None:
         self.selection_label.setText(f"Selected: {tournament_format}")
+        self.player_entry.set_format(tournament_format)
+        for button in [self.single_button, self.double_button, self.exit_button]:
+            button.setDefault(False)
+        self.pages.setCurrentWidget(self.player_entry)
+        self.player_entry.name_input.setFocus()
         self.format_selected.emit(tournament_format)
+
+    @Slot()
+    def _show_menu(self) -> None:
+        self.pages.setCurrentWidget(self.menu_page)
+        self.single_button.setFocus()
 
 
 def main() -> int:
