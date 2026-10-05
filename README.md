@@ -31,6 +31,14 @@ when choosing a different format.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
 
+## Window sizing
+
+The app opens maximized. Its typography, fields, buttons, player rows, and
+bracket cards are sized for a 1920×1080 window. The menu and setup form stay
+centered, with comfortable widths on a large screen. Smaller windows use a
+compact scale; the minimum window is 640×600. Switching pages preserves the
+chosen window size. Large brackets scroll while keeping match text readable.
+
 ## Save and load a tournament
 
 Click **Save As…** on the bracket screen to write a readable UTF-8 `.json` file.

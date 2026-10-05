@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtGui import QFont, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -23,6 +23,17 @@ from bracket_view import BracketView
 from player_entry import PlayerEntry
 from tournament_state import TournamentState
 from tournament_storage import load_tournament, save_tournament
+from ui_metrics import (
+    BODY_POINT_SIZE,
+    BUTTON_HEIGHT,
+    LAYOUT_SPACING,
+    MINIMUM_SCALE,
+    PAGE_MARGIN,
+    REFERENCE_HEIGHT,
+    REFERENCE_WIDTH,
+)
+
+_SCALE_CHANGE_THRESHOLD = 0.01
 
 
 class MainMenu(QDialog):
@@ -33,16 +44,15 @@ class MainMenu(QDialog):
     def __init__(self) -> None:
         super().__init__()
         self.tournament: TournamentState | None = None
+        self._ui_scale = -1.0
         self.setWindowTitle("Tourney")
-        self.setMinimumSize(360, 320)
-        self.resize(480, 400)
+        self.setWindowFlag(Qt.WindowType.WindowMinMaxButtonsHint)
+        self.setWindowFlag(Qt.WindowType.WindowContextHelpButtonHint, False)
+        self.setMinimumSize(640, 600)
+        self.resize(1280, 800)
 
-        title = QLabel("Tourney")
-        font = title.font()
-        font.setPointSize(24)
-        font.setBold(True)
-        title.setFont(font)
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label = QLabel("Tourney")
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         subtitle = QLabel("Choose a tournament format.")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -54,7 +64,8 @@ class MainMenu(QDialog):
         self.selection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.selection_label.setWordWrap(True)
         self.selection_label.setMinimumHeight(32)
-        self._build_layout(title, subtitle)
+        self._build_layout(self.title_label, subtitle)
+        self._apply_scale()
 
         self.single_button.clicked.connect(self._select_single)
         self.double_button.clicked.connect(self._select_double)
@@ -64,10 +75,15 @@ class MainMenu(QDialog):
 
     def _build_layout(self, title: QLabel, subtitle: QLabel) -> None:
         self.menu_page = QWidget()
-        layout = QVBoxLayout(self.menu_page)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(12)
-        layout.addStretch()
+        self._menu_layout = QVBoxLayout(self.menu_page)
+        self._menu_content = QWidget()
+        self._menu_content.setFixedWidth(540)
+        self._menu_content_layout = QVBoxLayout(self._menu_content)
+        layout = self._menu_content_layout
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._menu_layout.addStretch()
+        self._menu_layout.addWidget(self._menu_content, 0, Qt.AlignmentFlag.AlignHCenter)
+        self._menu_layout.addStretch()
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addSpacing(8)
@@ -76,7 +92,6 @@ class MainMenu(QDialog):
             button.setAutoDefault(True)
             layout.addWidget(button)
         layout.addWidget(self.selection_label)
-        layout.addStretch()
         self.setTabOrder(self.single_button, self.double_button)
         self.setTabOrder(self.double_button, self.load_button)
         self.setTabOrder(self.load_button, self.exit_button)
@@ -98,6 +113,37 @@ class MainMenu(QDialog):
         shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Open), self.menu_page)
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         shortcut.activated.connect(self.load_button.click)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """Scale controls against the full-HD reference as the window changes."""
+        super().resizeEvent(event)
+        if hasattr(self, "pages"):
+            self._apply_scale()
+
+    def _apply_scale(self) -> None:
+        scale = max(
+            MINIMUM_SCALE,
+            min(1.0, self.width() / REFERENCE_WIDTH, self.height() / REFERENCE_HEIGHT),
+        )
+        if abs(scale - self._ui_scale) < _SCALE_CHANGE_THRESHOLD:
+            return
+        self._ui_scale = scale
+        font = QFont(self.font())
+        font.setPointSizeF(BODY_POINT_SIZE * scale)
+        self.setFont(font)
+        heading = QFont(font)
+        heading.setPointSizeF(40 * scale)
+        heading.setBold(True)
+        self.title_label.setFont(heading)
+        self._menu_content.setFixedWidth(round(720 * scale))
+        self._menu_content_layout.setSpacing(round(LAYOUT_SPACING * scale))
+        margin = round(PAGE_MARGIN * scale)
+        self._menu_layout.setContentsMargins(margin, margin, margin, margin)
+        self.selection_label.setMinimumHeight(round(32 * scale))
+        for button in [self.single_button, self.double_button, self.load_button, self.exit_button]:
+            button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
+        self.player_entry._apply_scale(scale)
+        self.bracket_view._apply_scale(scale)
 
     @Slot()
     def _select_single(self) -> None:
@@ -124,7 +170,6 @@ class MainMenu(QDialog):
     @Slot(str, list, int)
     def _show_preview(self, tournament_format: str, names: list[str], table_count: int) -> None:
         draw = build_preview(shuffle_names(names), tournament_format)
-        self._setup_size = self.size()
         self._present_tournament(TournamentState(draw, tuple(names), table_count))
 
     def _present_tournament(self, state: TournamentState) -> None:
@@ -133,7 +178,6 @@ class MainMenu(QDialog):
         for button in [self.single_button, self.double_button, self.load_button, self.exit_button]:
             button.setDefault(False)
         self.pages.setCurrentWidget(self.bracket_view)
-        self.resize(max(self.width(), 1000), max(self.height(), 700))
         self.bracket_view.graphics.horizontalScrollBar().setValue(0)
         self.bracket_view.graphics.verticalScrollBar().setValue(0)
         self.bracket_view.back_button.setFocus()
@@ -144,7 +188,6 @@ class MainMenu(QDialog):
             self._show_menu()
             return
         self.pages.setCurrentWidget(self.player_entry)
-        self.resize(self._setup_size)
         self.player_entry.name_input.setFocus()
 
     @Slot()
@@ -191,7 +234,6 @@ class MainMenu(QDialog):
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Could Not Load Tournament", str(error))
             return
-        self._setup_size = self.size()
         self.player_entry.restore_setup(
             state.draw.tournament_format, state.entry_names, state.table_count
         )
@@ -205,7 +247,7 @@ def main() -> int:
     application = QApplication(sys.argv)
     application.setApplicationName("Tourney")
     window = MainMenu()
-    window.show()
+    window.showMaximized()
     return application.exec()
 
 

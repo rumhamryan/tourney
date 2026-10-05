@@ -2,8 +2,8 @@
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QSize, Qt, Signal, Slot
+from PySide6.QtGui import QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -13,6 +13,15 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QVBoxLayout,
     QWidget,
+)
+
+from ui_metrics import (
+    BUTTON_HEIGHT,
+    INPUT_HEIGHT,
+    LAYOUT_SPACING,
+    PAGE_MARGIN,
+    PAGE_TITLE_POINT_SIZE,
+    PLAYER_ROW_HEIGHT,
 )
 
 _MAX_PLAYERS = 32
@@ -27,6 +36,7 @@ class PlayerEntry(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
+        self._row_height = round(PLAYER_ROW_HEIGHT * 0.75)
         self.format_label = QLabel()
         self.table_count_input = QSpinBox()
         self.table_count_input.setRange(1, 2**31 - 1)
@@ -49,35 +59,65 @@ class PlayerEntry(QWidget):
         self._update_controls()
 
     def _build_layout(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 28, 28, 28)
-        layout.setSpacing(12)
-        title = QLabel("Tournament Setup")
-        font = title.font()
-        font.setPointSize(20)
-        font.setBold(True)
-        title.setFont(font)
+        self._page_layout = QHBoxLayout(self)
+        self._content = QWidget()
+        self._content.setMaximumWidth(1280)
+        self._page_layout.addStretch()
+        self._page_layout.addWidget(self._content, 1)
+        self._page_layout.addStretch()
+        self._content_layout = QVBoxLayout(self._content)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        layout = self._content_layout
+        self.title_label = QLabel("Tournament Setup")
         format_row = QHBoxLayout()
         format_row.addWidget(self.format_label)
         format_row.addStretch()
         format_row.addWidget(self.count_label)
         name_label = QLabel("Player &name:")
         name_label.setBuddy(self.name_input)
-        name_row = QHBoxLayout()
-        name_row.addWidget(self.name_input)
-        name_row.addWidget(self.add_button)
         actions = QHBoxLayout()
         actions.addWidget(self.remove_button)
         actions.addWidget(self.back_button)
-        layout.addWidget(title)
+        layout.addWidget(self.title_label)
         layout.addLayout(format_row)
         layout.addLayout(self._table_row())
         layout.addWidget(name_label)
-        layout.addLayout(name_row)
+        layout.addLayout(self._name_row())
         layout.addWidget(self.player_list, 1)
         layout.addWidget(self.feedback_label)
         layout.addLayout(actions)
         layout.addWidget(self.start_button)
+
+    def _name_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(self.name_input)
+        row.addWidget(self.add_button)
+        return row
+
+    def _apply_scale(self, scale: float) -> None:
+        font = QFont(self.font())
+        font.setPointSizeF(PAGE_TITLE_POINT_SIZE * scale)
+        font.setBold(True)
+        self.title_label.setFont(font)
+        margin = round(PAGE_MARGIN * scale)
+        self._page_layout.setContentsMargins(margin, margin, margin, margin)
+        self._content_layout.setSpacing(round(LAYOUT_SPACING * scale))
+        self._content.setMaximumWidth(round(1280 * scale))
+        self.name_input.setMinimumHeight(round(INPUT_HEIGHT * scale))
+        self.table_count_input.setMinimumHeight(round(INPUT_HEIGHT * scale))
+        self.table_count_input.setMinimumWidth(round(200 * scale))
+        self.add_button.setMinimumWidth(round(144 * scale))
+        self.feedback_label.setMinimumHeight(round(32 * scale))
+        for button in [self.add_button, self.remove_button, self.back_button, self.start_button]:
+            button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
+        self._row_height = round(PLAYER_ROW_HEIGHT * scale)
+        self._size_player_rows()
+
+    def _size_player_rows(self) -> None:
+        for row in range(self.player_list.count()):
+            item = self.player_list.item(row)
+            assert item is not None
+            item.setSizeHint(QSize(0, self._row_height))
 
     def _table_row(self) -> QHBoxLayout:
         label = QLabel("Number of &tables:")
@@ -214,6 +254,7 @@ class PlayerEntry(QWidget):
     @Slot()
     def _update_controls(self) -> None:
         count = self.player_list.count()
+        self._size_player_rows()
         self.count_label.setText(f"Players: {count} / {_MAX_PLAYERS}")
         self.add_button.setEnabled(count < _MAX_PLAYERS)
         self.remove_button.setEnabled(bool(self.player_list.selectedItems()))

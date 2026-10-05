@@ -10,6 +10,7 @@ from PySide6.QtGui import (
     QPalette,
     QPen,
     QShortcut,
+    QTransform,
 )
 from PySide6.QtWidgets import (
     QGraphicsScene,
@@ -24,11 +25,19 @@ from PySide6.QtWidgets import (
 
 from bracket_preview import Draw, PreviewMatch, Source
 from tournament_state import Outcome, TournamentState, resolved_outcomes, validate_tournament
+from ui_metrics import (
+    BODY_POINT_SIZE,
+    BUTTON_HEIGHT,
+    LAYOUT_SPACING,
+    PAGE_MARGIN,
+    PAGE_TITLE_POINT_SIZE,
+)
 
-_CARD_WIDTH = 216
-_CARD_HEIGHT = 100
-_COLUMN_STEP = 292
-_ROW_STEP = 124
+_CARD_WIDTH = 344
+_CARD_HEIGHT = 164
+_COLUMN_STEP = 420
+_ROW_STEP = 204
+_LINE_WIDTH = 2.0
 
 
 class BracketView(QWidget):
@@ -67,16 +76,12 @@ class BracketView(QWidget):
         self._build_layout()
 
     def _build_layout(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-        title = QLabel("Bracket Preview")
-        font = title.font()
-        font.setPointSize(20)
-        font.setBold(True)
-        title.setFont(font)
+        self._page_layout = QVBoxLayout(self)
+        layout = self._page_layout
+        self.title_label = QLabel("Bracket Preview")
         self.hint_label = QLabel("Scroll to see all rounds. Return to setup to edit the draw.")
         self.hint_label.setWordWrap(True)
-        layout.addWidget(title)
+        layout.addWidget(self.title_label)
         layout.addWidget(self.summary_label)
         layout.addWidget(self.hint_label)
         layout.addWidget(self.status_label)
@@ -86,6 +91,19 @@ class BracketView(QWidget):
         actions.addWidget(self.back_button)
         layout.addLayout(actions)
         self._connect_keyboard()
+
+    def _apply_scale(self, scale: float) -> None:
+        font = QFont(self.font())
+        font.setPointSizeF(PAGE_TITLE_POINT_SIZE * scale)
+        font.setBold(True)
+        self.title_label.setFont(font)
+        margin = round(PAGE_MARGIN * scale)
+        self._page_layout.setContentsMargins(margin, margin, margin, margin)
+        self._page_layout.setSpacing(round(LAYOUT_SPACING * scale))
+        self.status_label.setMinimumHeight(round(32 * scale))
+        for button in [self.save_button, self.back_button]:
+            button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
+        self.graphics.setTransform(QTransform.fromScale(scale, scale))
 
     def _connect_keyboard(self) -> None:
         for button in [self.save_button, self.back_button]:
@@ -147,19 +165,19 @@ class BracketView(QWidget):
     def _place_section(self, matches: list[PreviewMatch], title: str, top: float) -> float:
         self._text(title, QPointF(20, top), bold=True)
         if not matches:
-            self._text("Loser of W1 advances to the grand final.", QPointF(20, top + 30))
-            return top + 90
+            self._text("Loser of W1 advances to the grand final.", QPointF(20, top + 44))
+            return top + 120
         rounds: dict[int, list[PreviewMatch]] = {}
         for match in matches:
             rounds.setdefault(match.round_number, []).append(match)
         height = max(len(group) for group in rounds.values()) * _ROW_STEP
         for round_number, group in rounds.items():
             x = 20 + (round_number - 1) * _COLUMN_STEP
-            self._text(f"Round {round_number}", QPointF(x, top + 28))
+            self._text(f"Round {round_number}", QPointF(x, top + 44))
             for index, match in enumerate(group):
-                y = top + 60 + (index + 0.5) * height / len(group) - _CARD_HEIGHT / 2
+                y = top + 96 + (index + 0.5) * height / len(group) - _CARD_HEIGHT / 2
                 self._card(match, QRectF(x, y, _CARD_WIDTH, _CARD_HEIGHT))
-        return top + 60 + height
+        return top + 96 + height
 
     def _place_finals(self, draw: Draw) -> None:
         columns = max(match.round_number for match in draw.matches if match.section != "Finals")
@@ -167,7 +185,7 @@ class BracketView(QWidget):
         upper = [rect.center().y() for key, rect in self.match_rects.items() if key.startswith("W")]
         lower = [rect.center().y() for key, rect in self.match_rects.items() if key.startswith("L")]
         y = (sum(upper) / len(upper) + (sum(lower) / len(lower) if lower else max(upper) + 160)) / 2
-        self._text("Grand final", QPointF(x, y - 80), bold=True)
+        self._text("Grand final", QPointF(x, y - _CARD_HEIGHT / 2 - 44), bold=True)
         for match in draw.matches:
             if match.section == "Finals":
                 self._card(match, QRectF(x, y - _CARD_HEIGHT / 2, _CARD_WIDTH, _CARD_HEIGHT))
@@ -182,6 +200,7 @@ class BracketView(QWidget):
         color_role: QPalette.ColorRole = QPalette.ColorRole.WindowText,
     ) -> QGraphicsTextItem:
         font = QFont(self.font())
+        font.setPointSize(BODY_POINT_SIZE)
         font.setBold(bold)
         item = self.scene.addText(text, font)
         item.setDefaultTextColor(self.palette().color(color_role))
@@ -202,22 +221,24 @@ class BracketView(QWidget):
 
     def _card(self, match: PreviewMatch, rectangle: QRectF) -> None:
         self.match_rects[match.identifier] = rectangle
+        pen = QPen(Qt.GlobalColor.white)
+        pen.setWidthF(_LINE_WIDTH)
         self.scene.addRect(
             rectangle,
-            QPen(Qt.GlobalColor.white),
+            pen,
             self.palette().brush(QPalette.ColorRole.Base),
         )
         origin = rectangle.topLeft()
-        self._card_text(match.identifier, origin + QPointF(8, 2), bold=True)
-        for source, offset in zip(match.slots, [28, 51], strict=True):
-            self._card_text(self._slot_label(source), origin + QPointF(8, offset))
-        self._card_text(self._match_note(match), origin + QPointF(8, 74))
+        self._card_text(match.identifier, origin + QPointF(12, 8), bold=True)
+        for source, offset in zip(match.slots, [44, 80], strict=True):
+            self._card_text(self._slot_label(source), origin + QPointF(12, offset))
+        self._card_text(self._match_note(match), origin + QPointF(12, 116))
 
     def _card_text(self, text: str, position: QPointF, *, bold: bool = False) -> None:
         item = self._text(text, position, bold=bold, color_role=QPalette.ColorRole.Text)
         item.setPlainText(
             QFontMetrics(item.font()).elidedText(
-                text, Qt.TextElideMode.ElideRight, _CARD_WIDTH - 24
+                text, Qt.TextElideMode.ElideRight, _CARD_WIDTH - 32
             )
         )
         item.setToolTip(text)
@@ -273,13 +294,14 @@ class BracketView(QWidget):
 
     def _connector(self, source: QRectF, target: QRectF, slot: int, *, loser: bool) -> None:
         start = QPointF(source.right(), source.center().y())
-        end = QPointF(target.left(), target.top() + 40 + slot * 23)
+        end = QPointF(target.left(), target.top() + 60 + slot * 36)
         middle_x = end.x() - 30
         path = QPainterPath(start)
         path.lineTo(middle_x, start.y())
         path.lineTo(middle_x, end.y())
         path.lineTo(end)
         pen = QPen(Qt.GlobalColor.white)
+        pen.setWidthF(_LINE_WIDTH)
         if loser:
             pen.setStyle(Qt.PenStyle.DashLine)
         self.scene.addPath(path, pen).setZValue(-1)

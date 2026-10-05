@@ -134,7 +134,7 @@ def test_keyboard_activates_focused_format(
     assert menu.player_entry.feedback_label.text() == ""
 
 
-@pytest.mark.parametrize("width, height", [(360, 320), (480, 400), (900, 700)])
+@pytest.mark.parametrize("width, height", [(360, 320), (480, 400), (900, 700), (1920, 1080)])
 def test_controls_fit_when_resized(
     menu: MainMenu, application: QApplication, width: int, height: int
 ) -> None:
@@ -172,7 +172,7 @@ def test_main_shows_menu_and_returns_event_loop_exit_code() -> None:
 
         assert main() == 0
 
-    window.return_value.show.assert_called_once_with()
+    window.return_value.showMaximized.assert_called_once_with()
     application.return_value.exec.assert_called_once_with()
 
 
@@ -366,7 +366,7 @@ def test_player_entry_tab_order(entry: PlayerEntry) -> None:
         assert following.hasFocus()
 
 
-@pytest.mark.parametrize("width, height", [(360, 440), (480, 500), (900, 700)])
+@pytest.mark.parametrize("width, height", [(360, 440), (480, 500), (900, 700), (1920, 1080)])
 def test_player_entry_controls_fit_when_resized(
     menu: MainMenu, entry: PlayerEntry, application: QApplication, width: int, height: int
 ) -> None:
@@ -1026,3 +1026,66 @@ def test_existing_json_file_uses_file_dialog_overwrite_confirmation(
         menu.bracket_view.save_button.click()
     question.assert_not_called()
     assert load_tournament(path) == menu.tournament
+
+
+def test_full_hd_controls_are_readable_and_menu_is_centered(
+    menu: MainMenu, application: QApplication
+) -> None:
+    menu.resize(1920, 1080)
+    application.processEvents()
+    minimum_font_points = 14
+    minimum_button_height = 56
+    maximum_menu_width = 900
+    for button in [menu.single_button, menu.double_button, menu.load_button, menu.exit_button]:
+        assert button.font().pointSizeF() >= minimum_font_points
+        assert button.height() >= minimum_button_height
+        assert button.width() <= maximum_menu_width
+        center = button.mapTo(menu, button.rect().center())
+        assert abs(center.x() - menu.rect().center().x()) <= 1
+    menu.single_button.click()
+    for widget in [menu.player_entry.name_input, menu.player_entry.table_count_input]:
+        assert widget.font().pointSizeF() >= minimum_font_points
+        assert widget.height() >= minimum_button_height
+
+
+@pytest.mark.parametrize("player_count", [2, 8, 32])
+@pytest.mark.parametrize("tournament_format", ["Single Elimination", "Double Elimination"])
+def test_full_hd_bracket_text_fits_inside_larger_match_boxes(
+    menu: MainMenu,
+    entry: PlayerEntry,
+    application: QApplication,
+    player_count: int,
+    tournament_format: str,
+) -> None:
+    menu.resize(1920, 1080)
+    entry.set_format(tournament_format)
+    for index in range(player_count):
+        entry.name_input.setText(f"Player {index}")
+        entry.add_button.click()
+    entry.start_button.click()
+    application.processEvents()
+    view = menu.bracket_view
+    minimum_card_width = 300
+    minimum_font_points = 14
+    for rectangle in view.match_rects.values():
+        visible_width = view.graphics.mapFromScene(rectangle).boundingRect().width()
+        assert visible_width >= minimum_card_width
+        for item in view.scene.items(rectangle):
+            if isinstance(item, QGraphicsTextItem):
+                assert item.font().pointSizeF() >= minimum_font_points
+                assert rectangle.contains(item.sceneBoundingRect())
+
+
+@pytest.mark.parametrize("width, height", [(900, 700), (1920, 1080)])
+def test_switching_pages_keeps_the_user_selected_window_size(
+    menu: MainMenu, entry: PlayerEntry, width: int, height: int
+) -> None:
+    menu.resize(width, height)
+    expected_size = menu.size()
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    assert menu.size() == expected_size
+    menu.bracket_view.back_button.click()
+    assert menu.size() == expected_size
