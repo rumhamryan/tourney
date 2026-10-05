@@ -59,6 +59,12 @@ def entry(menu: MainMenu) -> PlayerEntry:
 
 
 @pytest.fixture
+def chip_entry(menu: MainMenu) -> PlayerEntry:
+    menu.chip_button.click()
+    return menu.player_entry
+
+
+@pytest.fixture
 def start_requests(entry: PlayerEntry) -> list[tuple[str, list[str], int]]:
     requests: list[tuple[str, list[str], int]] = []
     entry.start_requested.connect(
@@ -323,6 +329,7 @@ def test_menu_opens_with_expected_controls(menu: MainMenu) -> None:
     assert menu.windowTitle() == "Tourney"
     assert menu.single_button.text() == "&Single Elimination"
     assert menu.double_button.text() == "&Double Elimination"
+    assert menu.chip_button.text() == "&Chip Tournament"
     assert menu.load_button.text() == "&Load Tournament"
     assert menu.exit_button.text() == "E&xit"
     assert menu.selection_label.text() == ""
@@ -333,6 +340,7 @@ def test_menu_opens_with_expected_controls(menu: MainMenu) -> None:
     [
         ("single_button", "Single Elimination"),
         ("double_button", "Double Elimination"),
+        ("chip_button", "Chip Tournament"),
     ],
 )
 def test_format_buttons_report_correct_selection(
@@ -363,7 +371,8 @@ def test_keyboard_focus_cycles_through_buttons(menu: MainMenu) -> None:
     menu.single_button.setFocus()
     for current, following in [
         (menu.single_button, menu.double_button),
-        (menu.double_button, menu.load_button),
+        (menu.double_button, menu.chip_button),
+        (menu.chip_button, menu.load_button),
         (menu.load_button, menu.exit_button),
         (menu.exit_button, menu.single_button),
     ]:
@@ -381,6 +390,7 @@ def test_keyboard_focus_cycles_through_buttons(menu: MainMenu) -> None:
     [
         ("single_button", "Single Elimination"),
         ("double_button", "Double Elimination"),
+        ("chip_button", "Chip Tournament"),
     ],
 )
 def test_keyboard_activates_focused_format(
@@ -403,7 +413,13 @@ def test_controls_fit_when_resized(
     menu.resize(width, height)
     application.processEvents()
 
-    for button in [menu.single_button, menu.double_button, menu.exit_button]:
+    for button in [
+        menu.single_button,
+        menu.double_button,
+        menu.chip_button,
+        menu.load_button,
+        menu.exit_button,
+    ]:
         assert button.isVisible()
         assert menu.rect().contains(button.geometry())
         assert button.width() >= button.sizeHint().width()
@@ -444,6 +460,156 @@ def test_player_entry_opens_empty_with_name_field_focused(entry: PlayerEntry) ->
     assert entry.count_label.text() == "Players: 0 / 32"
     assert entry.add_button.isEnabled()
     assert not entry.remove_button.isEnabled()
+
+
+def test_chip_setup_requires_explicit_counts(chip_entry: PlayerEntry) -> None:
+    assert chip_entry.chip_count_input.isVisible()
+    assert chip_entry.chip_count_input.text() == ""
+    assert chip_entry.chip_count_input.y() > chip_entry.name_input.y()
+    assert chip_entry.name_input.hasFocus()
+    assert chip_entry.add_button.text() == "&Add Player"
+    assert not chip_entry.start_button.isEnabled()
+
+
+@pytest.mark.parametrize("chips", ["", "0", "-1", "1.5", "abc", "2147483648"])
+def test_chip_setup_rejects_missing_or_invalid_counts(chip_entry: PlayerEntry, chips: str) -> None:
+    chip_entry.name_input.setText("Alice")
+    chip_entry.chip_count_input.setText(chips)
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == []
+    assert chip_entry.name_input.text() == "Alice"
+    assert chip_entry.chip_count_input.hasFocus()
+    assert "positive whole number" in chip_entry.feedback_label.text()
+
+
+def test_chip_setup_adds_name_and_count_and_clears_both_fields(chip_entry: PlayerEntry) -> None:
+    chip_entry.name_input.setText("  Alice  ")
+    chip_entry.chip_count_input.setText("5")
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Alice"]
+    assert chip_entry.player_chip_counts() == [5]
+    assert chip_entry.name_input.text() == ""
+    assert chip_entry.chip_count_input.text() == ""
+    assert chip_entry.name_input.hasFocus()
+    assert chip_entry.feedback_label.text() == ""
+
+
+def test_chip_setup_requires_a_name_and_accepts_the_largest_count(chip_entry: PlayerEntry) -> None:
+    chips = 2**31 - 1
+    chip_entry.chip_count_input.setText(str(chips))
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == []
+    assert chip_entry.name_input.hasFocus()
+    chip_entry.name_input.setText("Alice")
+    chip_entry.add_button.click()
+    assert chip_entry.player_chip_counts() == [chips]
+
+
+def test_chip_player_limit_cannot_be_bypassed_with_enter(chip_entry: PlayerEntry) -> None:
+    for index in range(_PLAYER_LIMIT):
+        chip_entry.name_input.setText(f"Player {index}")
+        chip_entry.chip_count_input.setText("3")
+        chip_entry.add_button.click()
+    chip_entry.name_input.setText("Extra")
+    chip_entry.chip_count_input.setText("5")
+    QTest.keyClick(chip_entry.chip_count_input, Qt.Key.Key_Return)
+    assert len(chip_entry.player_names()) == _PLAYER_LIMIT
+    assert chip_entry.name_input.text() == "Extra"
+    assert chip_entry.chip_count_input.text() == "5"
+    assert not chip_entry.add_button.isEnabled()
+
+
+def test_chip_setup_preserves_duplicate_names_with_distinct_counts(chip_entry: PlayerEntry) -> None:
+    for chips in ["2", "7", "4"]:
+        chip_entry.name_input.setText("Same 李")
+        chip_entry.chip_count_input.setText(chips)
+        chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Same 李"] * 3
+    assert chip_entry.player_chip_counts() == [2, 7, 4]
+    chip_entry.player_list.setCurrentRow(1)
+    chip_entry.remove_button.click()
+    assert chip_entry.player_chip_counts() == [2, 4]
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter])
+def test_chip_entry_keyboard_moves_from_name_to_chips_then_adds(
+    chip_entry: PlayerEntry, key: Qt.Key
+) -> None:
+    QTest.keyClicks(chip_entry.name_input, "Alice")
+    QTest.keyClick(chip_entry.name_input, key)
+    assert chip_entry.chip_count_input.hasFocus()
+    assert chip_entry.player_names() == []
+    QTest.keyClicks(chip_entry.chip_count_input, "3")
+    QTest.keyClick(chip_entry.chip_count_input, key)
+    assert chip_entry.player_names() == ["Alice"]
+    assert chip_entry.player_chip_counts() == [3]
+    assert chip_entry.name_input.hasFocus()
+
+
+def test_chip_setup_tab_order(chip_entry: PlayerEntry) -> None:
+    QTest.keyClick(chip_entry.name_input, Qt.Key.Key_Tab)
+    assert chip_entry.chip_count_input.hasFocus()
+    QTest.keyClick(chip_entry.chip_count_input, Qt.Key.Key_Tab)
+    assert chip_entry.add_button.hasFocus()
+
+
+def test_chip_setup_keeps_counts_and_unfinished_input_when_switching_modes(
+    menu: MainMenu, chip_entry: PlayerEntry
+) -> None:
+    chip_entry.name_input.setText("Alice")
+    chip_entry.chip_count_input.setText("3")
+    chip_entry.add_button.click()
+    chip_entry.name_input.setText("Bob")
+    chip_entry.chip_count_input.setText("6")
+    tables = 4
+    chip_entry.table_count_input.setValue(tables)
+    chip_entry.back_button.click()
+    menu.single_button.click()
+    assert not chip_entry.chip_count_input.isVisible()
+    assert chip_entry.add_button.text() == "&Add"
+    assert chip_entry.player_names() == ["Alice"]
+    chip_entry.back_button.click()
+    menu.chip_button.click()
+    assert chip_entry.player_chip_counts() == [3]
+    assert chip_entry.name_input.text() == "Bob"
+    assert chip_entry.chip_count_input.text() == "6"
+    assert chip_entry.table_count() == tables
+
+
+def test_chip_start_does_not_launch_a_bracket(menu: MainMenu, chip_entry: PlayerEntry) -> None:
+    requests: list[tuple[str, list[str], int]] = []
+    chip_entry.start_requested.connect(lambda *args: requests.append(args))
+    for name in ["Alice", "Bob"]:
+        chip_entry.name_input.setText(name)
+        chip_entry.chip_count_input.setText("3")
+        chip_entry.add_button.click()
+    assert not chip_entry.start_button.isEnabled()
+    chip_entry._request_start()
+    assert requests == []
+    assert menu.pages.currentWidget() is chip_entry
+    assert menu.tournament is None
+
+
+@pytest.mark.parametrize("width, height", [(640, 600), (900, 700), (1920, 1080)])
+def test_chip_setup_controls_fit_and_fields_are_stacked(
+    menu: MainMenu, chip_entry: PlayerEntry, application: QApplication, width: int, height: int
+) -> None:
+    menu.resize(width, height)
+    application.processEvents()
+    assert menu.width() == width and menu.height() == height
+    for widget in [
+        chip_entry.name_input,
+        chip_entry.chip_count_input,
+        chip_entry.add_button,
+        chip_entry.player_list,
+        chip_entry.remove_button,
+        chip_entry.back_button,
+        chip_entry.start_button,
+    ]:
+        assert widget.isVisible()
+        assert chip_entry.rect().contains(widget.geometry())
+    assert chip_entry.name_input.geometry().bottom() < chip_entry.chip_count_input.geometry().top()
+    assert chip_entry.chip_count_input.geometry().bottom() < chip_entry.player_list.geometry().top()
 
 
 def test_add_button_adds_trimmed_name(entry: PlayerEntry) -> None:
@@ -1396,7 +1562,13 @@ def test_full_hd_controls_are_readable_and_menu_is_centered(
     minimum_font_points = 14
     minimum_button_height = 56
     maximum_menu_width = 900
-    for button in [menu.single_button, menu.double_button, menu.load_button, menu.exit_button]:
+    for button in [
+        menu.single_button,
+        menu.double_button,
+        menu.chip_button,
+        menu.load_button,
+        menu.exit_button,
+    ]:
         assert button.font().pointSizeF() >= minimum_font_points
         assert button.height() >= minimum_button_height
         assert button.width() <= maximum_menu_width

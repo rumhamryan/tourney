@@ -77,10 +77,7 @@ class MainMenu(QDialog):
         subtitle = QLabel("Choose a tournament format.")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.single_button = QPushButton("&Single Elimination")
-        self.double_button = QPushButton("&Double Elimination")
-        self.load_button = QPushButton("&Load Tournament")
-        self.exit_button = QPushButton("E&xit")
+        self._build_menu_buttons()
         self.selection_label = QLabel("")
         self.selection_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.selection_label.setWordWrap(True)
@@ -88,11 +85,28 @@ class MainMenu(QDialog):
         self._build_layout(self.title_label, subtitle)
         self._apply_scale()
 
+        self.single_button.setFocus()
+
+    def _build_menu_buttons(self) -> None:
+        self.single_button = QPushButton("&Single Elimination")
+        self.double_button = QPushButton("&Double Elimination")
+        self.chip_button = QPushButton("&Chip Tournament")
+        self.load_button = QPushButton("&Load Tournament")
+        self.exit_button = QPushButton("E&xit")
         self.single_button.clicked.connect(self._select_single)
         self.double_button.clicked.connect(self._select_double)
+        self.chip_button.clicked.connect(self._select_chip)
         self.load_button.clicked.connect(self._load_tournament)
         self.exit_button.clicked.connect(self.close)
-        self.single_button.setFocus()
+
+    def _menu_buttons(self) -> tuple[QPushButton, ...]:
+        return (
+            self.single_button,
+            self.double_button,
+            self.chip_button,
+            self.load_button,
+            self.exit_button,
+        )
 
     def _init_scheduling(self) -> None:
         self.scheduling_result: SchedulingResult | None = None
@@ -114,13 +128,14 @@ class MainMenu(QDialog):
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addSpacing(8)
-        for button in [self.single_button, self.double_button, self.load_button, self.exit_button]:
+        for button in self._menu_buttons():
             button.setMinimumHeight(40)
             button.setAutoDefault(True)
             layout.addWidget(button)
         layout.addWidget(self.selection_label)
         self.setTabOrder(self.single_button, self.double_button)
-        self.setTabOrder(self.double_button, self.load_button)
+        self.setTabOrder(self.double_button, self.chip_button)
+        self.setTabOrder(self.chip_button, self.load_button)
         self.setTabOrder(self.load_button, self.exit_button)
         self._build_pages()
 
@@ -168,7 +183,7 @@ class MainMenu(QDialog):
         margin = round(PAGE_MARGIN * scale)
         self._menu_layout.setContentsMargins(margin, margin, margin, margin)
         self.selection_label.setMinimumHeight(round(32 * scale))
-        for button in [self.single_button, self.double_button, self.load_button, self.exit_button]:
+        for button in self._menu_buttons():
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
         self.player_entry._apply_scale(scale)
         self.bracket_view._apply_scale(scale)
@@ -181,10 +196,14 @@ class MainMenu(QDialog):
     def _select_double(self) -> None:
         self._select_format("Double Elimination")
 
+    @Slot()
+    def _select_chip(self) -> None:
+        self._select_format("Chip Tournament")
+
     def _select_format(self, tournament_format: str) -> None:
         self.selection_label.setText(f"Selected: {tournament_format}")
         self.player_entry.set_format(tournament_format)
-        for button in [self.single_button, self.double_button, self.load_button, self.exit_button]:
+        for button in self._menu_buttons():
             button.setDefault(False)
         self.pages.setCurrentWidget(self.player_entry)
         self.player_entry.name_input.setFocus()
@@ -203,7 +222,7 @@ class MainMenu(QDialog):
     def _present_tournament(self, state: TournamentState) -> None:
         self.tournament = replace(state, draw_locked=True)
         self.bracket_view.show_tournament(self.tournament)
-        for button in [self.single_button, self.double_button, self.load_button, self.exit_button]:
+        for button in self._menu_buttons():
             button.setDefault(False)
         self.pages.setCurrentWidget(self.bracket_view)
         self.bracket_view.graphics.horizontalScrollBar().setValue(0)

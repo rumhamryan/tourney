@@ -8,12 +8,23 @@ From the repository directory, run:
 uv run python src/main_menu.py
 ```
 
-The menu offers Single Elimination, Double Elimination, Load Tournament, and Exit. Choosing
+The menu offers Single Elimination, Double Elimination, Chip Tournament, Load Tournament,
+and Exit. Choosing
 a format opens tournament setup. Set Number of tables using the arrows or
 type a positive whole number; it defaults to one. Type a name and press Enter or click Add.
 Select a player and click Remove Selected, or press Delete while the player
 list has focus. Blank names are rejected, and the limit is 32 players.
 Repeated names are allowed.
+
+Chip Tournament adds a **Chip count** field directly below the player-name field.
+Enter a name and a positive whole-number count, then click **Add Player**.
+Both fields clear after adding; no chip count is supplied automatically.
+Enter in the name field moves to the chip field; Enter there adds the player.
+The roster displays names and chip counts in aligned columns, and returning
+through the menu preserves them. Players entered in bracket modes have no chip
+count and are marked **Chips not set** when viewed in chip mode.
+Chip mode currently provides setup only; its Start button is disabled while
+the tournament screen is being designed.
 
 Start becomes available after adding at least two players and leaving no name
 waiting to be added. Clicking it shuffles the players, locks the draw, assigns
