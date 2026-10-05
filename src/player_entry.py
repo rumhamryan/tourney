@@ -1,5 +1,7 @@
 """The tournament-setup page used by either tournament format."""
 
+from collections.abc import Sequence
+
 from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -117,6 +119,26 @@ class PlayerEntry(QWidget):
         """Display the chosen format while preserving the entered names."""
         self.format_label.setText(tournament_format)
         self._update_start_button()
+
+    def restore_setup(self, tournament_format: str, names: Sequence[str], table_count: int) -> None:
+        """Restore a validated setup without adding names through input controls."""
+        players = list(names)
+        if tournament_format not in {"Single Elimination", "Double Elimination"}:
+            raise ValueError("Unknown tournament format.")
+        if not _MIN_PLAYERS <= len(players) <= _MAX_PLAYERS or any(
+            not isinstance(name, str) or not name.strip() or name != name.strip()
+            for name in players
+        ):
+            raise ValueError("Setup must contain 2–32 nonblank player names.")
+        if type(table_count) is not int or not 1 <= table_count <= self.table_count_input.maximum():
+            raise ValueError("Invalid table count.")
+        self.name_input.clear()
+        self.player_list.clear()
+        self.player_list.addItems(players)
+        self.table_count_input.setValue(table_count)
+        self.format_label.setText(tournament_format)
+        self.feedback_label.clear()
+        self._update_controls()
 
     def player_names(self) -> list[str]:
         """Return an independent copy of the names in entry order."""

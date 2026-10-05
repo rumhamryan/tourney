@@ -8,7 +8,7 @@ From the repository directory, run:
 uv run python src/main_menu.py
 ```
 
-The menu offers Single Elimination, Double Elimination, and Exit. Choosing
+The menu offers Single Elimination, Double Elimination, Load Tournament, and Exit. Choosing
 a format opens tournament setup. Set Number of tables using the arrows or
 type a positive whole number; it defaults to one. Type a name and press Enter or click Add.
 Select a player and click Remove Selected, or press Delete while the player
@@ -27,10 +27,37 @@ again creates a new randomized preview. Result entry and table assignments
 will be added separately.
 
 Back to Menu preserves the table count, player list, and any unfinished name, including
-when choosing a different format. Names are held in memory for the current
-session; saving will be added separately.
+when choosing a different format.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
+
+## Save and load a tournament
+
+Click **Save As…** on the bracket screen to write a readable UTF-8 `.json` file.
+Use **Load Tournament** on the main menu to restore it. Loading preserves the
+exact draw; it never reshuffles the players. Ctrl+Shift+S opens Save As on the
+bracket screen, and Ctrl+O opens Load from the main menu. macOS uses the platform's
+standard shortcuts.
+
+The versioned snapshot includes the original setup order, randomized player
+order, format, full winners'/losers' match graph, conditional reset, table count,
+custom table labels, match statuses, winners, active table assignments, and the
+draw-lock flag. Players are referenced by zero-based draw indices rather than
+names, so repeated names remain distinct. Tables are numbered from one; omitted
+label overrides default to `Table N`, and omitted match progress is pending.
+Automatic byes, readiness, reset eligibility, and the champion are derived from
+the saved graph and results.
+
+Loaded progress appears in the bracket, including winners and occupied tables.
+A started tournament returns to the main menu instead of editable setup to keep
+its draw locked. Scoring and table-assignment controls will be added separately;
+their state is already supported by this file format. This step provides manual
+saves; automatic recovery saves are a later step.
+
+Invalid or unsupported files are rejected before changing the current tournament.
+Saving flushes a temporary file beside the destination and replaces the old file
+atomically; a failed write leaves the previous save intact. The JSON schema is
+currently version 1; future bracket-rule changes will require an explicit migration.
 
 Run the UI checks without opening a desktop window:
 

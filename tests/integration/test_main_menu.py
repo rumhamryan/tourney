@@ -1,14 +1,18 @@
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QGraphicsTextItem
+from PySide6.QtWidgets import QApplication, QGraphicsTextItem, QMessageBox
 
 from bracket_preview import build_preview
 from main_menu import MainMenu, main
 from player_entry import PlayerEntry
+from tournament_state import MatchProgress, TableLabel, TournamentState
+from tournament_storage import load_tournament, save_tournament
 
 _PLAYER_LIMIT = 32
 
@@ -57,6 +61,7 @@ def test_menu_opens_with_expected_controls(menu: MainMenu) -> None:
     assert menu.windowTitle() == "Tourney"
     assert menu.single_button.text() == "&Single Elimination"
     assert menu.double_button.text() == "&Double Elimination"
+    assert menu.load_button.text() == "&Load Tournament"
     assert menu.exit_button.text() == "E&xit"
     assert menu.selection_label.text() == ""
 
@@ -96,7 +101,8 @@ def test_keyboard_focus_cycles_through_buttons(menu: MainMenu) -> None:
     menu.single_button.setFocus()
     for current, following in [
         (menu.single_button, menu.double_button),
-        (menu.double_button, menu.exit_button),
+        (menu.double_button, menu.load_button),
+        (menu.load_button, menu.exit_button),
         (menu.exit_button, menu.single_button),
     ]:
         assert current.hasFocus()
@@ -718,3 +724,305 @@ def test_preview_rejects_invalid_table_count_without_replacing_draw(menu: MainMe
         menu.bracket_view.show_draw(build_preview(["Alice", "Bob"], "Single Elimination"), 0)
 
     assert menu.bracket_view.draw is None
+
+
+@pytest.fixture
+def saved_state() -> TournamentState:
+    draw = build_preview(["Zoë", "李", "Zoë", "Dana"], "Double Elimination")
+    return TournamentState(
+        draw,
+        tuple(reversed(draw.names)),
+        3,
+        progress=(
+            MatchProgress("W1", "completed", winner_index=1),
+            MatchProgress("W2", "in_progress", table_number=2),
+        ),
+        table_labels=(TableLabel(2, "Feature table"),),
+        draw_locked=True,
+    )
+
+
+def test_save_as_writes_exact_draw_and_setup_order(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path
+) -> None:
+    names = ["Alice", "Bob", "Carol"]
+    for name in names:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.table_count_input.setValue(4)
+    with patch("main_menu.shuffle_names", side_effect=lambda players: list(reversed(players))):
+        entry.start_button.click()
+    path = tmp_path / "my bracket.json"
+    with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+        menu.bracket_view.save_button.click()
+    loaded = load_tournament(path)
+    assert loaded.draw == menu.bracket_view.draw
+    assert loaded.entry_names == tuple(names)
+    expected_tables = 4
+    assert loaded.table_count == expected_tables
+    assert "Saved" in menu.bracket_view.status_label.text()
+
+
+def test_load_restores_saved_progress_without_shuffling(
+    menu: MainMenu, tmp_path: Path, saved_state: TournamentState
+) -> None:
+    path = tmp_path / "saved.json"
+    save_tournament(path, saved_state)
+    with (
+        patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")),
+        patch("main_menu.shuffle_names", side_effect=AssertionError("must not reshuffle")),
+    ):
+        menu.load_button.click()
+    assert menu.bracket_view.isVisible()
+    assert menu.tournament == saved_state
+    assert menu.bracket_view.draw == saved_state.draw
+    assert menu.player_entry.player_names() == list(saved_state.entry_names)
+    assert menu.player_entry.table_count() == saved_state.table_count
+    texts = {
+        item.toPlainText()
+        for item in menu.bracket_view.scene.items()
+        if isinstance(item, QGraphicsTextItem)
+    }
+    assert "Winner: 李" in texts
+    assert "In progress · Feature table" in texts
+    assert menu.bracket_view.back_button.text() == "&Back to Menu"
+    menu.bracket_view.back_button.click()
+    assert menu.menu_page.isVisible()
+
+
+def test_loaded_progress_can_be_saved_again_without_loss(
+    menu: MainMenu, tmp_path: Path, saved_state: TournamentState
+) -> None:
+    original = tmp_path / "original.json"
+    copy = tmp_path / "copy.json"
+    save_tournament(original, saved_state)
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(original), "")):
+        menu.load_button.click()
+    with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(copy), "")):
+        menu.bracket_view.save_button.click()
+    assert load_tournament(copy) == saved_state
+
+
+def test_unstarted_loaded_draw_can_return_to_setup(menu: MainMenu, tmp_path: Path) -> None:
+    draw = build_preview(["Alice", "Bob", "Carol"], "Single Elimination")
+    state = TournamentState(draw, tuple(reversed(draw.names)), 5)
+    path = tmp_path / "before play.json"
+    save_tournament(path, state)
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+        menu.load_button.click()
+    menu.bracket_view.back_button.click()
+    assert menu.player_entry.isVisible()
+    assert menu.player_entry.player_names() == list(state.entry_names)
+    assert menu.player_entry.format_label.text() == state.draw.tournament_format
+    assert menu.player_entry.name_input.hasFocus()
+    assert menu.player_entry.count_label.text() == "Players: 3 / 32"
+    assert menu.player_entry.start_button.isEnabled()
+
+
+def test_cancel_load_keeps_current_page_and_setup(menu: MainMenu) -> None:
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=("", "")):
+        menu.load_button.click()
+    assert menu.menu_page.isVisible()
+    assert menu.tournament is None
+    assert menu.player_entry.player_names() == []
+
+
+@pytest.mark.parametrize("contents", ["not json", "{}", "[]"])
+def test_invalid_load_does_not_change_current_tournament(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path, contents: str
+) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    original = menu.tournament
+    menu.bracket_view.back_button.click()
+    entry.back_button.click()
+    path = tmp_path / "bad.json"
+    path.write_text(contents, encoding="utf-8")
+    with (
+        patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")),
+        patch("main_menu.QMessageBox.warning") as warning,
+    ):
+        menu.load_button.click()
+    warning.assert_called_once()
+    assert menu.menu_page.isVisible()
+    assert menu.tournament is original
+    assert entry.player_names() == ["Alice", "Bob"]
+
+
+def test_load_io_error_is_reported_without_leaving_menu(menu: MainMenu) -> None:
+    with (
+        patch("main_menu.QFileDialog.getOpenFileName", return_value=("missing.json", "")),
+        patch("main_menu.load_tournament", side_effect=OSError("permission denied")),
+        patch("main_menu.QMessageBox.warning") as warning,
+    ):
+        menu.load_button.click()
+    warning.assert_called_once()
+    assert menu.menu_page.isVisible()
+    assert menu.tournament is None
+
+
+def test_save_cancel_and_write_failure_keep_draw(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path
+) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    original = menu.tournament
+    with (
+        patch("main_menu.QFileDialog.getSaveFileName", return_value=("", "")),
+        patch("main_menu.save_tournament") as save,
+    ):
+        menu.bracket_view.save_button.click()
+    save.assert_not_called()
+    with (
+        patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / "a"), "")),
+        patch("main_menu.save_tournament", side_effect=OSError("disk full")),
+        patch("main_menu.QMessageBox.warning") as warning,
+    ):
+        menu.bracket_view.save_button.click()
+    warning.assert_called_once()
+    assert menu.tournament is original
+    assert menu.bracket_view.isVisible()
+
+
+@pytest.mark.parametrize("filename", ["bracket", "bracket.txt", "bracket.JSON"])
+def test_save_as_ensures_json_extension(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path, filename: str
+) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    with patch(
+        "main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / filename), "")
+    ):
+        menu.bracket_view.save_button.click()
+    expected = filename if filename.lower().endswith(".json") else filename + ".json"
+    assert load_tournament(tmp_path / expected) == menu.tournament
+
+
+def test_load_shortcut_is_only_available_on_main_menu(
+    menu: MainMenu, application: QApplication
+) -> None:
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=("", "")) as dialog:
+        QTest.keySequence(menu, QKeySequence(QKeySequence.StandardKey.Open))
+        assert dialog.call_count == 1
+        menu.single_button.click()
+        application.processEvents()
+        QTest.keySequence(menu.player_entry.name_input, QKeySequence(QKeySequence.StandardKey.Open))
+        assert dialog.call_count == 1
+        for name in ["Alice", "Bob"]:
+            menu.player_entry.name_input.setText(name)
+            menu.player_entry.add_button.click()
+        menu.player_entry.start_button.click()
+        application.processEvents()
+        QTest.keySequence(
+            menu.bracket_view.back_button, QKeySequence(QKeySequence.StandardKey.Open)
+        )
+        assert dialog.call_count == 1
+        assert not menu.load_button.isVisible()
+
+
+def test_save_shortcut_works_on_bracket(menu: MainMenu, entry: PlayerEntry, tmp_path: Path) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    path = tmp_path / "shortcut.json"
+    with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+        QTest.keySequence(
+            menu.bracket_view.back_button, QKeySequence(QKeySequence.StandardKey.SaveAs)
+        )
+    assert load_tournament(path) == menu.tournament
+
+
+@pytest.mark.parametrize("answer", [QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No])
+def test_adding_json_extension_confirms_overwrite(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path, answer: QMessageBox.StandardButton
+) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    path = tmp_path / "existing.json"
+    path.write_text("previous save", encoding="utf-8")
+    with (
+        patch(
+            "main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / "existing"), "")
+        ),
+        patch("main_menu.QMessageBox.question", return_value=answer) as question,
+    ):
+        menu.bracket_view.save_button.click()
+    question.assert_called_once()
+    if answer == QMessageBox.StandardButton.Yes:
+        assert load_tournament(path) == menu.tournament
+    else:
+        assert path.read_text(encoding="utf-8") == "previous save"
+
+
+@pytest.mark.parametrize("gf_winner", [0, 1])
+def test_loaded_double_final_uses_player_ids_for_reset_note(
+    menu: MainMenu, tmp_path: Path, gf_winner: int
+) -> None:
+    draw = build_preview(["Same name", "Same name"], "Double Elimination")
+    state = TournamentState(
+        draw,
+        draw.names,
+        1,
+        progress=(
+            MatchProgress("W1", "completed", winner_index=0),
+            MatchProgress("GF", "completed", winner_index=gf_winner),
+        ),
+        draw_locked=True,
+    )
+    path = tmp_path / "final.json"
+    save_tournament(path, state)
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+        menu.load_button.click()
+    texts = {
+        item.toPlainText()
+        for item in menu.bracket_view.scene.items()
+        if isinstance(item, QGraphicsTextItem)
+    }
+    assert ("Not needed" if gf_winner == 0 else "If losers' finalist wins GF") in texts
+
+
+@pytest.mark.parametrize(
+    "tournament_format, names, table_count",
+    [
+        ("Unknown", ["Alice", "Bob"], 1),
+        ("Single Elimination", ["Alice"], 1),
+        ("Single Elimination", ["Alice", " "], 1),
+        ("Single Elimination", ["Alice", "Bob"], 0),
+    ],
+)
+def test_restore_setup_validates_before_changing_inputs(
+    entry: PlayerEntry, tournament_format: str, names: list[str], table_count: int
+) -> None:
+    entry.name_input.setText("Unfinished name")
+    with pytest.raises(ValueError):
+        entry.restore_setup(tournament_format, names, table_count)
+    assert entry.name_input.text() == "Unfinished name"
+    assert entry.player_names() == []
+    assert entry.format_label.text() == "Single Elimination"
+
+
+def test_existing_json_file_uses_file_dialog_overwrite_confirmation(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path
+) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    path = tmp_path / "existing.json"
+    path.write_text("previous save", encoding="utf-8")
+    with (
+        patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")),
+        patch("main_menu.QMessageBox.question") as question,
+    ):
+        menu.bracket_view.save_button.click()
+    question.assert_not_called()
+    assert load_tournament(path) == menu.tournament
