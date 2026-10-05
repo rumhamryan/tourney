@@ -20,11 +20,16 @@ from PySide6.QtWidgets import (
 
 from bracket_preview import build_preview
 from bracket_view import _ResultDialog
+from chip_storage import load_tournament as load_chip_tournament
+from chip_storage import save_tournament as save_chip_tournament
+from chip_tournament import record_result as record_chip_result
+from chip_view import _ResultDialog as _ChipResultDialog
 from main_menu import MainMenu, main
 from player_entry import PlayerEntry
 from table_scheduler import SchedulingResult, schedule_tables
 from tournament_state import MatchProgress, TableLabel, TournamentState
 from tournament_storage import load_tournament, save_tournament
+from ui_metrics import REFERENCE_WIDTH
 
 _PLAYER_LIMIT = 32
 
@@ -107,6 +112,282 @@ def _click_match(menu: MainMenu, match_id: str = "W1") -> None:
     view.graphics.ensureVisible(rectangle)
     point = view.graphics.mapFromScene(rectangle.center())
     QTest.mouseClick(view.graphics.viewport(), Qt.MouseButton.LeftButton, pos=point)
+
+
+def _start_chip_players(entry: PlayerEntry, chips: list[int], tables: int = 1) -> None:
+    entry.table_count_input.setValue(tables)
+    for index, count in enumerate(chips):
+        entry.name_input.setText(f"Player {index + 1}")
+        entry.chip_count_input.setText(str(count))
+        entry.add_button.click()
+    with patch("chip_tournament.shuffle"):
+        entry.start_button.click()
+    QApplication.processEvents()
+
+
+def _choose_chip_winner(menu: MainMenu, identifier: str, position: int = 0) -> None:
+    def choose() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ChipResultDialog)
+        dialog.winner_buttons[position].click()
+
+    QTimer.singleShot(0, choose)
+    with patch("chip_tournament.shuffle"):
+        menu.chip_view.match_cards[identifier].click()
+    QApplication.processEvents()
+
+
+def test_chip_round_barrier_removes_cards_and_refills_free_tables(
+    menu: MainMenu, chip_entry: PlayerEntry
+) -> None:
+    _start_chip_players(chip_entry, [1] * 6, 2)
+    view = menu.chip_view
+    assert not view.match_cards["R1M3"].isEnabled()
+    _choose_chip_winner(menu, "R1M1")
+    assert set(view.match_cards) == {"R1M2", "R1M3"}
+    state = menu.chip_tournament
+    assert state is not None and len(state.rounds) == 1
+    assert [match.table_number for match in state.rounds[-1].matches] == [None, 2, 1]
+    assert state.players[0].chips == 1 and state.players[1].chips == 0
+    eliminated = view.leaderboard.topLevelItem(5)
+    assert eliminated is not None
+    assert eliminated.data(0, Qt.ItemDataRole.UserRole) == 1
+    assert "Eliminated" in eliminated.toolTip(0)
+    assert eliminated.text(0) == "Player 2 · Eliminated"
+    _choose_chip_winner(menu, "R1M2")
+    assert set(view.match_cards) == {"R1M3"}
+    _choose_chip_winner(menu, "R1M3")
+    assert set(view.match_cards) == {"R2M1"}
+    assert menu.chip_tournament is not None
+    assert [round_.number for round_ in menu.chip_tournament.rounds] == [1, 2]
+    assert view.bye_label.text().startswith("Bye this round:")
+
+
+def test_chip_last_survivor_displays_champion_and_empty_grid(
+    menu: MainMenu, chip_entry: PlayerEntry
+) -> None:
+    _start_chip_players(chip_entry, [2, 1], 6)
+    _choose_chip_winner(menu, "R1M1")
+    assert not menu.chip_view.match_cards
+    assert menu.chip_view.status_label.text() == "Champion: Player 1"
+    assert menu.chip_tournament is not None
+    assert [player.chips for player in menu.chip_tournament.players] == [2, 0]
+
+
+def test_chip_dialog_has_only_two_winner_buttons_and_cancel_preserves_state(
+    menu: MainMenu, chip_entry: PlayerEntry
+) -> None:
+    _start_chip_players(chip_entry, [2, 2])
+    original = menu.chip_tournament
+    contents: list[tuple[list[str], list[str]]] = []
+
+    def cancel() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ChipResultDialog)
+        contents.append(
+            (
+                [label.text() for label in dialog.findChildren(QLabel)],
+                [button.text() for button in dialog.findChildren(QPushButton)],
+            )
+        )
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+
+    QTimer.singleShot(0, cancel)
+    menu.chip_view.match_cards["R1M1"].click()
+    assert contents == [(["Select the winner."], ["Player 1", "Player 2"])]
+    assert menu.chip_tournament is original
+
+
+def test_chip_match_and_winner_support_keyboard(menu: MainMenu, chip_entry: PlayerEntry) -> None:
+    _start_chip_players(chip_entry, [1, 1])
+    card = menu.chip_view.match_cards["R1M1"]
+    card.setFocus()
+    QApplication.processEvents()
+
+    def choose() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ChipResultDialog)
+        dialog.activateWindow()
+        QApplication.processEvents()
+        dialog.winner_buttons[1].setFocus()
+        QTest.keyClick(dialog.winner_buttons[1], Qt.Key.Key_Return)
+
+    QTimer.singleShot(0, choose)
+    QTest.keyClick(card, Qt.Key.Key_Return)
+    assert menu.chip_view.status_label.text() == "Champion: Player 2"
+
+
+def test_chip_pending_matches_cannot_record_results(
+    menu: MainMenu, chip_entry: PlayerEntry
+) -> None:
+    _start_chip_players(chip_entry, [2] * 4)
+    original = menu.chip_tournament
+    with patch("chip_view._ResultDialog") as dialog:
+        menu.chip_view.match_cards["R1M2"].click()
+        menu.chip_view._open_result("R1M2")
+        menu.chip_view._open_result("unknown")
+    dialog.assert_not_called()
+    assert menu.chip_tournament is original
+    with patch("main_menu.QMessageBox.warning") as warning:
+        menu._record_chip_result("R1M2", 2)
+    warning.assert_called_once()
+    assert menu.chip_tournament is original
+
+
+def test_chip_missing_counts_can_be_updated_without_duplicating_players(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.back_button.click()
+    menu.chip_button.click()
+    assert not entry.start_button.isEnabled()
+    for row, count in enumerate([2, 3]):
+        item = entry.player_list.item(row)
+        assert item is not None
+        entry.player_list.itemClicked.emit(item)
+        assert entry.chip_count_input.text() == ""
+        entry.chip_count_input.setText(str(count))
+        entry.add_button.click()
+    assert entry.player_names() == ["Alice", "Bob"]
+    assert entry.player_chip_counts() == [2, 3]
+    assert entry.start_button.isEnabled()
+    entry.start_button.click()
+    assert menu.chip_tournament is not None
+
+
+def test_chip_registered_counts_can_be_changed_in_place(
+    menu: MainMenu, chip_entry: PlayerEntry
+) -> None:
+    _start_chip_players(chip_entry, [2, 3])
+    menu.chip_view.back_button.click()
+    menu.chip_button.click()
+    item = chip_entry.player_list.item(0)
+    assert item is not None
+    chip_entry.player_list.itemActivated.emit(item)
+    assert chip_entry.name_input.text() == "Player 1"
+    assert chip_entry.chip_count_input.text() == "2"
+    chip_entry.name_input.setText("Alice")
+    chip_entry.chip_count_input.setText("5")
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Alice", "Player 2"]
+    assert chip_entry.player_chip_counts() == [5, 3]
+
+
+@pytest.mark.parametrize("width, height", [(640, 600), (900, 700), (1920, 1080)])
+def test_chip_leaderboard_and_match_grid_fit_resized_window(
+    menu: MainMenu, chip_entry: PlayerEntry, width: int, height: int
+) -> None:
+    menu.resize(width, height)
+    _start_chip_players(chip_entry, [3] * 32, 16)
+    view = menu.chip_view
+    assert menu.width() == width and menu.height() == height
+    matchup_pane = view.splitter.widget(1)
+    assert matchup_pane is not None
+    assert view.leaderboard_pane.x() < matchup_pane.x()
+    assert view.match_scroll.horizontalScrollBar().maximum() == 0
+    cards = list(view.match_cards.values())
+    assert cards[0].player_labels[0].font().pointSizeF() == view.font().pointSizeF()
+    assert len({card.height() for card in cards}) == 1
+    assert max(card.width() for card in cards) - min(card.width() for card in cards) <= 1
+    first = view._grid.itemAtPosition(0, 0)
+    row, column = (0, 1) if view._columns > 1 else (1, 0)
+    second = view._grid.itemAtPosition(row, column)
+    assert first is not None and first.widget() is cards[0]
+    assert second is not None and second.widget() is cards[1]
+    if width == REFERENCE_WIDTH:
+        assert view._columns > 1
+
+
+def test_chip_long_and_duplicate_names_keep_full_identity(
+    menu: MainMenu, chip_entry: PlayerEntry
+) -> None:
+    name = "Zoë & 李 <player> " * 30
+    for count in [2, 3]:
+        chip_entry.name_input.setText(name)
+        chip_entry.chip_count_input.setText(str(count))
+        chip_entry.add_button.click()
+    chip_entry.start_button.click()
+    QApplication.processEvents()
+    card = menu.chip_view.match_cards["R1M1"]
+    assert all(label.toolTip() == name.strip() for label in card.player_labels)
+    assert all(len(label.text()) < len(name) for label in card.player_labels)
+    seen: list[str] = []
+
+    def choose() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ChipResultDialog)
+        seen.extend(button.accessibleName() for button in dialog.winner_buttons)
+        dialog.winner_buttons[0].click()
+
+    QTimer.singleShot(0, choose)
+    card.click()
+    assert seen == [f"Top player: {name.strip()}", f"Bottom player: {name.strip()}"]
+    assert menu.chip_view.match_scroll.horizontalScrollBar().maximum() == 0
+
+
+def test_chip_save_and_load_resume_partial_round_without_redrawing(
+    menu: MainMenu, chip_entry: PlayerEntry, tmp_path: Path
+) -> None:
+    _start_chip_players(chip_entry, [3] * 5, 1)
+    _choose_chip_winner(menu, "R1M1")
+    original = menu.chip_tournament
+    path = tmp_path / "chips.json"
+    with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
+        menu.chip_view.save_button.click()
+    assert load_chip_tournament(path) == original
+    menu.chip_view.back_button.click()
+    with (
+        patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")),
+        patch("chip_tournament.shuffle") as shuffle,
+    ):
+        menu.load_button.click()
+    shuffle.assert_not_called()
+    assert menu.chip_tournament == original
+    assert menu.pages.currentWidget() is menu.chip_view
+    assert set(menu.chip_view.match_cards) == {"R1M2"}
+    assert menu.player_entry.player_chip_counts() == [3] * 5
+
+
+def test_chip_champion_save_load_keeps_champion_visible(
+    menu: MainMenu, chip_entry: PlayerEntry, tmp_path: Path
+) -> None:
+    _start_chip_players(chip_entry, [1, 1])
+    state = menu.chip_tournament
+    assert state is not None
+    state = record_chip_result(state, "R1M1", 0)
+    path = tmp_path / "champion.json"
+    save_chip_tournament(path, state)
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+        menu._load_tournament()
+    assert menu.chip_view.status_label.text() == "Champion: Player 1"
+    assert not menu.chip_view.match_cards
+
+
+def test_chip_bad_load_and_failed_save_preserve_current_tournament(
+    menu: MainMenu, chip_entry: PlayerEntry, tmp_path: Path
+) -> None:
+    _start_chip_players(chip_entry, [2, 2])
+    original = menu.chip_tournament
+    path = tmp_path / "bad.json"
+    path.write_text("{}", encoding="utf-8")
+    with (
+        patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")),
+        patch("main_menu.QMessageBox.warning") as warning,
+    ):
+        menu._load_tournament()
+    warning.assert_called_once()
+    assert menu.chip_tournament is original
+    with (
+        patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")),
+        patch("main_menu.save_chip_tournament", side_effect=OSError("disk full")),
+        patch("main_menu.QMessageBox.warning") as warning,
+    ):
+        menu._save_tournament()
+    warning.assert_called_once()
+    assert menu.chip_tournament is original
+    assert path.read_text(encoding="utf-8") == "{}"
 
 
 def test_start_assigns_tables_and_recording_winner_refills_them(
@@ -246,6 +527,32 @@ def test_stale_background_schedule_cannot_replace_new_tournament(
     assert menu.tournament is current
     assert current is not None and current.draw.tournament_format == "Single Elimination"
     assert not menu.bracket_view.scheduling
+
+
+def test_stale_bracket_schedule_cannot_replace_chip_tournament(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    release = Event()
+
+    def delayed_schedule(state: TournamentState) -> SchedulingResult:
+        assert release.wait(timeout=5)
+        return schedule_tables(state)
+
+    with patch("main_menu.schedule_tables", side_effect=delayed_schedule):
+        entry.set_format("Double Elimination")
+        _start_players(entry, ["Alice", "Bob"])
+        menu.bracket_view.back_button.click()
+        menu.chip_button.click()
+        try:
+            entry.restore_chip_setup(["Alice", "Bob"], [2, 3], 1)
+            entry.start_button.click()
+            current = menu.chip_tournament
+        finally:
+            release.set()
+            _wait_workers(menu)
+    assert menu.chip_tournament is current and current is not None
+    assert menu.tournament is None
+    assert menu.pages.currentWidget() is menu.chip_view
 
 
 def test_click_active_match_records_result_and_shows_champion(
@@ -576,17 +883,20 @@ def test_chip_setup_keeps_counts_and_unfinished_input_when_switching_modes(
     assert chip_entry.table_count() == tables
 
 
-def test_chip_start_does_not_launch_a_bracket(menu: MainMenu, chip_entry: PlayerEntry) -> None:
+def test_chip_start_opens_leaderboard_and_matchups(menu: MainMenu, chip_entry: PlayerEntry) -> None:
     requests: list[tuple[str, list[str], int]] = []
     chip_entry.start_requested.connect(lambda *args: requests.append(args))
     for name in ["Alice", "Bob"]:
         chip_entry.name_input.setText(name)
         chip_entry.chip_count_input.setText("3")
         chip_entry.add_button.click()
-    assert not chip_entry.start_button.isEnabled()
-    chip_entry._request_start()
-    assert requests == []
-    assert menu.pages.currentWidget() is chip_entry
+    assert chip_entry.start_button.isEnabled()
+    chip_entry.start_button.click()
+    assert requests == [("Chip Tournament", ["Alice", "Bob"], 1)]
+    assert menu.pages.currentWidget() is menu.chip_view
+    assert menu.chip_tournament is not None
+    assert menu.chip_view.leaderboard.topLevelItemCount() == len(menu.chip_tournament.players)
+    assert len(menu.chip_view.match_cards) == 1
     assert menu.tournament is None
 
 

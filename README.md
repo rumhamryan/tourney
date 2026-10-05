@@ -23,10 +23,11 @@ Enter in the name field moves to the chip field; Enter there adds the player.
 The roster displays names and chip counts in aligned columns, and returning
 through the menu preserves them. Players entered in bracket modes have no chip
 count and are marked **Chips not set** when viewed in chip mode.
-Chip mode currently provides setup only; its Start button is disabled while
-the tournament screen is being designed.
+Select a registered player to edit their name or chip count, then click
+**Update Player**. Start requires at least two players, a chip count for every
+player, and no unfinished entry.
 
-Start becomes available after adding at least two players and leaving no name
+For elimination formats, Start becomes available after adding at least two players and leaving no name
 waiting to be added. Clicking it shuffles the players, locks the draw, assigns
 ready matches to tables, and opens a scrollable bracket. Double elimination
 shows winners' and losers' sides, a grand
@@ -48,6 +49,20 @@ when choosing a different format.
 Save the current tournament before starting another one; Start creates a new draw.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
+
+## Chip tournament rounds
+
+Starting a chip tournament opens the current chip leaderboard on the left and
+an evenly spaced matchup grid on the right. Players are paired randomly each
+round. Active matchups show their table number in green; waiting matchups fill
+tables as they become free.
+
+Click an active matchup and select the winner. The loser loses one chip, the
+winner keeps their chips, and the completed matchup disappears. The leaderboard
+updates immediately, with eliminated players shown at the bottom. Once every
+matchup in the round finishes, players with chips are randomly paired again.
+An odd roster gives one player a bye without losing a chip; byes favor players
+who have received the fewest. Rounds continue until only one player has chips.
 
 ## Automatic table scheduling
 
@@ -73,15 +88,19 @@ chosen window size. Large brackets scroll while keeping match text readable.
 
 ## Save and load a tournament
 
-Click **Save As…** on the bracket screen to write a readable UTF-8 `.json` file.
+Click **Save As…** on the tournament screen to write a readable UTF-8 `.json` file.
 Use **Load Tournament** on the main menu to restore it. Loading preserves the
 exact draw; it never reshuffles the players. Ctrl+Shift+S opens Save As on the
-bracket screen, and Ctrl+O opens Load from the main menu. macOS uses the platform's
+tournament screen, and Ctrl+O opens Load from the main menu. macOS uses the platform's
 standard shortcuts.
 Loading also locks the draw, preserves existing assignments and results, and
 assigns ready matches to any free tables.
 
-The versioned snapshot includes the original setup order, randomized player
+Chip saves preserve starting and current chip counts, every round and result,
+byes, and active table assignments. Loading resumes the current round without
+changing its pairings.
+
+The elimination snapshot includes the original setup order, randomized player
 order, format, full winners'/losers' match graph, conditional reset, table count,
 custom table labels, match statuses, winners, active table assignments, and the
 draw-lock flag. Players are referenced by zero-based draw indices rather than

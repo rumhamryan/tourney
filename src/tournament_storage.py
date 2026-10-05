@@ -160,7 +160,11 @@ def save_tournament(path: Path, state: TournamentState) -> None:
     on the same filesystem. The file is flushed to disk before replacement.
     I/O errors propagate to the caller, and temporary files are removed.
     """
-    contents = dumps_tournament(state)
+    _save_contents(path, dumps_tournament(state))
+
+
+def _save_contents(path: Path, contents: str) -> None:
+    """Share the same atomic file replacement for bracket and chip snapshots."""
     temporary: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(

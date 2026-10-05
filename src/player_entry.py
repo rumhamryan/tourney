@@ -87,6 +87,7 @@ class PlayerEntry(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self._row_height = round(PLAYER_ROW_HEIGHT * 0.75)
+        self._editing_item: QListWidgetItem | None = None
         self.format_label = QLabel()
         self.table_count_input = QSpinBox()
         self.table_count_input.setRange(1, 2**31 - 1)
@@ -209,8 +210,11 @@ class PlayerEntry(QWidget):
         self.back_button.clicked.connect(self.back_requested.emit)
         self.start_button.clicked.connect(self._request_start)
         self.name_input.textChanged.connect(self._update_start_button)
+        self.chip_count_input.textChanged.connect(self._update_start_button)
         self.table_count_input.valueChanged.connect(self._update_start_button)
         self.player_list.itemSelectionChanged.connect(self._update_controls)
+        self.player_list.itemClicked.connect(self._edit_chip_player)
+        self.player_list.itemActivated.connect(self._edit_chip_player)
         delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.player_list)
         delete.setContext(Qt.ShortcutContext.WidgetShortcut)
         delete.activated.connect(self._remove_player)
@@ -233,6 +237,7 @@ class PlayerEntry(QWidget):
     def set_format(self, tournament_format: str) -> None:
         """Display the chosen format while preserving the entered names."""
         self.format_label.setText(tournament_format)
+        self._editing_item = None
         chip_mode = tournament_format == "Chip Tournament"
         self.chip_label.setVisible(chip_mode)
         self.chip_count_input.setVisible(chip_mode)
@@ -262,12 +267,41 @@ class PlayerEntry(QWidget):
             raise ValueError("Invalid table count.")
         self.name_input.clear()
         self.chip_count_input.clear()
+        self._editing_item = None
         self.player_list.clear()
         self.player_list.addItems(players)
         self.table_count_input.setValue(table_count)
         self.set_format(tournament_format)
         self.feedback_label.clear()
         self._update_controls()
+
+    def restore_chip_setup(
+        self, names: Sequence[str], chip_counts: Sequence[int], table_count: int
+    ) -> None:
+        """Restore initial chip allowances while preserving the original entry order."""
+        if len(names) != len(chip_counts) or any(
+            type(count) is not int or not 1 <= count <= _MAX_CHIPS for count in chip_counts
+        ):
+            raise ValueError("Every player needs a positive whole-number chip count.")
+        self.restore_setup("Single Elimination", names, table_count)
+        for row, chips in enumerate(chip_counts):
+            item = self.player_list.item(row)
+            assert item is not None
+            item.setData(Qt.ItemDataRole.UserRole, chips)
+        self.set_format("Chip Tournament")
+        self._update_controls()
+
+    @Slot(QListWidgetItem)
+    def _edit_chip_player(self, item: QListWidgetItem) -> None:
+        if self.format_label.text() != "Chip Tournament":
+            return
+        self._editing_item = item
+        self.name_input.setText(item.text())
+        chips = item.data(Qt.ItemDataRole.UserRole)
+        self.chip_count_input.setText("" if chips is None else str(chips))
+        self.add_button.setText("&Update Player")
+        self.add_button.setEnabled(True)
+        self.chip_count_input.setFocus()
 
     def player_names(self) -> list[str]:
         """Return an independent copy of the names in entry order."""
@@ -324,21 +358,26 @@ class PlayerEntry(QWidget):
 
     @Slot()
     def _update_start_button(self) -> None:
-        if self.format_label.text() == "Chip Tournament":
-            self.start_button.setEnabled(False)
-            self.start_button.setToolTip("Chip tournament play is not available yet.")
-            return
+        chip_mode = self.format_label.text() == "Chip Tournament"
+        chips_ready = not chip_mode or all(count is not None for count in self.player_chip_counts())
         count = self.player_list.count()
-        pending_name = bool(self.name_input.text().strip())
+        pending_name = bool(self.name_input.text().strip()) or (
+            chip_mode and bool(self.chip_count_input.text().strip())
+        )
         self.start_button.setEnabled(
             _MIN_PLAYERS <= count <= _MAX_PLAYERS
             and not pending_name
             and bool(self.format_label.text())
+            and chips_ready
         )
         if count < _MIN_PLAYERS:
             self.start_button.setToolTip("Add at least two players to start.")
         elif pending_name:
             self.start_button.setToolTip("Add the entered name before starting.")
+        elif not chips_ready:
+            self.start_button.setToolTip(
+                "Select each player without chips and enter their chip count."
+            )
         else:
             self.start_button.setToolTip("Confirm tournament setup.")
         if self.feedback_label.text().startswith("Setup confirmed:"):
@@ -351,7 +390,7 @@ class PlayerEntry(QWidget):
             self.feedback_label.setText("Enter a player name.")
             self.name_input.setFocus()
             return
-        if self.player_list.count() >= _MAX_PLAYERS:
+        if self.player_list.count() >= _MAX_PLAYERS and self._editing_item is None:
             self._update_controls()
             return
         chip_mode = self.format_label.text() == "Chip Tournament"
@@ -360,20 +399,34 @@ class PlayerEntry(QWidget):
             self.feedback_label.setText("Enter a positive whole number for the chip count.")
             self.chip_count_input.setFocus()
             return
-        item = QListWidgetItem(name)
-        item.setData(Qt.ItemDataRole.UserRole, chips)
-        item.setToolTip(name if chips is None else f"{name} · {chips} chips")
-        item.setData(Qt.ItemDataRole.AccessibleTextRole, item.toolTip())
-        self.player_list.addItem(item)
-        self.player_list.setCurrentRow(self.player_list.count() - 1)
+        item = self._store_player(name, chips)
+        self.player_list.setCurrentRow(self.player_list.row(item))
         self.name_input.clear()
         self.chip_count_input.clear()
+        self._editing_item = None
+        self.add_button.setText("&Add Player" if chip_mode else "&Add")
         self.feedback_label.clear()
         self._update_controls()
         self.name_input.setFocus()
 
+    def _store_player(self, name: str, chips: int | None) -> QListWidgetItem:
+        item = self._editing_item
+        if item is None:
+            item = QListWidgetItem(name)
+            self.player_list.addItem(item)
+        item.setText(name)
+        item.setData(Qt.ItemDataRole.UserRole, chips)
+        item.setToolTip(name if chips is None else f"{name} · {chips} chips")
+        item.setData(Qt.ItemDataRole.AccessibleTextRole, item.toolTip())
+        return item
+
     @Slot()
     def _remove_player(self) -> None:
+        if self._editing_item in self.player_list.selectedItems():
+            self._editing_item = None
+            self.name_input.clear()
+            self.chip_count_input.clear()
+            self.add_button.setText("&Add Player")
         for item in self.player_list.selectedItems():
             self.player_list.takeItem(self.player_list.row(item))
         self.feedback_label.clear()
@@ -384,7 +437,7 @@ class PlayerEntry(QWidget):
         count = self.player_list.count()
         self._size_player_rows()
         self.count_label.setText(f"Players: {count} / {_MAX_PLAYERS}")
-        self.add_button.setEnabled(count < _MAX_PLAYERS)
+        self.add_button.setEnabled(count < _MAX_PLAYERS or self._editing_item is not None)
         self.remove_button.setEnabled(bool(self.player_list.selectedItems()))
         self._update_start_button()
         if count == _MAX_PLAYERS:

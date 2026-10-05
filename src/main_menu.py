@@ -21,6 +21,14 @@ from PySide6.QtWidgets import (
 from bracket import shuffle_names
 from bracket_preview import build_preview
 from bracket_view import BracketView
+from chip_storage import load_tournament as load_chip_tournament
+from chip_storage import save_tournament as save_chip_tournament
+from chip_tournament import ChipTournament
+from chip_tournament import champion_index as chip_champion_index
+from chip_tournament import record_result as record_chip_result
+from chip_tournament import resume_tournament as resume_chip_tournament
+from chip_tournament import start_tournament as start_chip_tournament
+from chip_view import ChipView
 from player_entry import PlayerEntry
 from table_scheduler import SchedulingResult, schedule_tables
 from tournament_state import TournamentState, champion_index, record_result
@@ -109,6 +117,7 @@ class MainMenu(QDialog):
         )
 
     def _init_scheduling(self) -> None:
+        self.chip_tournament: ChipTournament | None = None
         self.scheduling_result: SchedulingResult | None = None
         self._schedule_generation = 0
         self._scheduling_threads: set[_SchedulingThread] = set()
@@ -147,11 +156,16 @@ class MainMenu(QDialog):
         self.bracket_view.back_requested.connect(self._show_setup)
         self.bracket_view.save_requested.connect(self._save_tournament)
         self.bracket_view.result_requested.connect(self._record_result)
+        self.chip_view = ChipView()
+        self.chip_view.back_requested.connect(self._show_menu)
+        self.chip_view.save_requested.connect(self._save_tournament)
+        self.chip_view.result_requested.connect(self._record_chip_result)
         self.pages = QStackedLayout(self)
         self.pages.setContentsMargins(0, 0, 0, 0)
         self.pages.addWidget(self.menu_page)
         self.pages.addWidget(self.player_entry)
         self.pages.addWidget(self.bracket_view)
+        self.pages.addWidget(self.chip_view)
         self.setMinimumSize(self.minimumSize().expandedTo(self.pages.minimumSize()))
         shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.Open), self.menu_page)
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -187,6 +201,7 @@ class MainMenu(QDialog):
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
         self.player_entry._apply_scale(scale)
         self.bracket_view._apply_scale(scale)
+        self.chip_view._apply_scale(scale)
 
     @Slot()
     def _select_single(self) -> None:
@@ -216,10 +231,17 @@ class MainMenu(QDialog):
 
     @Slot(str, list, int)
     def _show_preview(self, tournament_format: str, names: list[str], table_count: int) -> None:
+        if tournament_format == "Chip Tournament":
+            counts = [
+                count for count in self.player_entry.player_chip_counts() if count is not None
+            ]
+            self._present_chip_tournament(start_chip_tournament(names, counts, table_count))
+            return
         draw = build_preview(shuffle_names(names), tournament_format)
         self._present_tournament(TournamentState(draw, tuple(names), table_count))
 
     def _present_tournament(self, state: TournamentState) -> None:
+        self.chip_tournament = None
         self.tournament = replace(state, draw_locked=True)
         self.bracket_view.show_tournament(self.tournament)
         for button in self._menu_buttons():
@@ -229,6 +251,30 @@ class MainMenu(QDialog):
         self.bracket_view.graphics.verticalScrollBar().setValue(0)
         self.bracket_view.back_button.setFocus()
         self._schedule_tables()
+
+    def _present_chip_tournament(self, state: ChipTournament) -> None:
+        self._schedule_generation += 1
+        self.tournament = None
+        self.scheduling_result = None
+        self.bracket_view.set_scheduling(False)
+        self.chip_tournament = resume_chip_tournament(state)
+        self.chip_view.show_tournament(self.chip_tournament)
+        for button in self._menu_buttons():
+            button.setDefault(False)
+        self.pages.setCurrentWidget(self.chip_view)
+        self.chip_view.back_button.setFocus()
+
+    @Slot(str, int)
+    def _record_chip_result(self, match_id: str, winner_index: int) -> None:
+        if self.chip_tournament is None:
+            return
+        try:
+            updated = record_chip_result(self.chip_tournament, match_id, winner_index)
+        except ValueError as error:
+            QMessageBox.warning(self, "Could Not Record Result", str(error))
+            return
+        self.chip_tournament = updated
+        self.chip_view.show_tournament(updated)
 
     def _schedule_tables(self) -> None:
         assert self.tournament is not None
@@ -310,7 +356,7 @@ class MainMenu(QDialog):
 
     @Slot()
     def _save_tournament(self) -> None:
-        if self.tournament is None:
+        if self.tournament is None and self.chip_tournament is None:
             return
         selected, _ = QFileDialog.getSaveFileName(
             self, "Save Tournament As", "tournament.json", "Tournament JSON (*.json)"
@@ -324,11 +370,19 @@ class MainMenu(QDialog):
                 path = path.with_name(path.name + ".json")
             if needs_suffix and path.exists() and not self._confirm_overwrite(path):
                 return
-            save_tournament(path, self.tournament)
+            self._write_tournament(path)
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Could Not Save Tournament", str(error))
             return
-        self.bracket_view.status_label.setText(f"Saved: {path}")
+        view = self.chip_view if self.chip_tournament is not None else self.bracket_view
+        view.status_label.setText(f"Saved: {path}")
+
+    def _write_tournament(self, path: Path) -> None:
+        if self.chip_tournament is not None:
+            save_chip_tournament(path, self.chip_tournament)
+        else:
+            assert self.tournament is not None
+            save_tournament(path, self.tournament)
 
     def _confirm_overwrite(self, path: Path) -> bool:
         answer = QMessageBox.question(
@@ -348,9 +402,20 @@ class MainMenu(QDialog):
         if not selected:
             return
         try:
-            state = load_tournament(Path(selected))
+            state = self._read_tournament(Path(selected))
         except (OSError, ValueError) as error:
             QMessageBox.warning(self, "Could Not Load Tournament", str(error))
+            return
+        if isinstance(state, ChipTournament):
+            self.player_entry.restore_chip_setup(
+                [player.name for player in state.players],
+                [player.starting_chips for player in state.players],
+                state.table_count,
+            )
+            self.selection_label.setText("Selected: Chip Tournament")
+            self._present_chip_tournament(state)
+            if chip_champion_index(state) is None:
+                self.chip_view.status_label.setText(f"Loaded: {selected}")
             return
         self.player_entry.restore_setup(
             state.draw.tournament_format, state.entry_names, state.table_count
@@ -363,6 +428,15 @@ class MainMenu(QDialog):
             and champion_index(self.tournament) is None
         ):
             self.bracket_view.status_label.setText(f"Loaded: {selected}")
+
+    def _read_tournament(self, path: Path) -> TournamentState | ChipTournament:
+        try:
+            return load_tournament(path)
+        except ValueError as bracket_error:
+            try:
+                return load_chip_tournament(path)
+            except ValueError:
+                raise bracket_error from None
 
 
 def main() -> int:
