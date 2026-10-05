@@ -1,16 +1,28 @@
 from collections.abc import Iterator
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor, QKeySequence, QPalette
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QGraphicsTextItem, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDialog,
+    QGraphicsTextItem,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+)
 
 from bracket_preview import build_preview
+from bracket_view import _ResultDialog
 from main_menu import MainMenu, main
 from player_entry import PlayerEntry
+from table_scheduler import SchedulingResult, schedule_tables
 from tournament_state import MatchProgress, TableLabel, TournamentState
 from tournament_storage import load_tournament, save_tournament
 
@@ -35,6 +47,7 @@ def menu(application: QApplication) -> Iterator[MainMenu]:
     application.processEvents()
     yield window
     window.close()
+    _wait_workers(window)
     window.deleteLater()
     application.processEvents()
 
@@ -54,6 +67,255 @@ def start_requests(entry: PlayerEntry) -> list[tuple[str, list[str], int]]:
         )
     )
     return requests
+
+
+def _wait_scheduling(menu: MainMenu) -> None:
+    for _ in range(300):
+        QApplication.processEvents()
+        if not menu.bracket_view.scheduling:
+            return
+        QTest.qWait(10)
+    pytest.fail("Scheduling did not complete")
+
+
+def _wait_workers(menu: MainMenu) -> None:
+    for _ in range(300):
+        QApplication.processEvents()
+        if not menu._scheduling_threads:
+            return
+        QTest.qWait(10)
+    pytest.fail("Scheduling workers did not finish")
+
+
+def _start_players(entry: PlayerEntry, names: list[str]) -> None:
+    for name in names:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    with patch("main_menu.shuffle_names", side_effect=lambda players: players):
+        entry.start_button.click()
+
+
+def _click_match(menu: MainMenu, match_id: str = "W1") -> None:
+    view = menu.bracket_view
+    rectangle = view.match_rects[match_id]
+    view.graphics.ensureVisible(rectangle)
+    point = view.graphics.mapFromScene(rectangle.center())
+    QTest.mouseClick(view.graphics.viewport(), Qt.MouseButton.LeftButton, pos=point)
+
+
+def test_start_assigns_tables_and_recording_winner_refills_them(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    _start_players(entry, ["Alice", "Bob", "Carol", "Dana"])
+    _wait_scheduling(menu)
+    assert menu.tournament is not None and menu.tournament.draw_locked
+    assert menu.tournament.progress == (MatchProgress("W1", "in_progress", table_number=1),)
+    assert [button.text() for button in menu.bracket_view.findChildren(QPushButton)] == [
+        "&Save As…",
+        "&Back to Menu",
+    ]
+
+    def choose_winner() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ResultDialog)
+        dialog.winner_buttons[1].click()
+
+    QTimer.singleShot(0, choose_winner)
+    _click_match(menu)
+    _wait_scheduling(menu)
+    assert menu.tournament.progress == (
+        MatchProgress("W1", "completed", winner_index=1),
+        MatchProgress("W2", "in_progress", table_number=1),
+    )
+    assert menu.bracket_view.back_button.text() == "&Back to Menu"
+
+
+def test_result_dialog_cancel_preserves_snapshot(menu: MainMenu, entry: PlayerEntry) -> None:
+    _start_players(entry, ["Alice", "Bob"])
+    original = menu.tournament
+
+    def cancel() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ResultDialog)
+        dialog.reject()
+
+    QTimer.singleShot(0, cancel)
+    _click_match(menu)
+    assert menu.tournament == original
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter])
+def test_result_can_be_recorded_using_keyboard(
+    menu: MainMenu, entry: PlayerEntry, key: Qt.Key
+) -> None:
+    _start_players(entry, ["Alice", "Bob"])
+    focus_checks: list[bool] = []
+
+    def choose_winner() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ResultDialog)
+        dialog.activateWindow()
+        QApplication.processEvents()
+        dialog.winner_buttons[0].setFocus()
+        QTest.keyClick(dialog.winner_buttons[0], Qt.Key.Key_Tab)
+        focus_checks.append(dialog.winner_buttons[1].hasFocus())
+        QTest.keyClick(dialog.winner_buttons[1], key)
+
+    QTimer.singleShot(0, choose_winner)
+    _click_match(menu)
+    assert focus_checks == [True]
+    assert menu.tournament is not None
+    assert menu.tournament.progress == (MatchProgress("W1", "completed", winner_index=1),)
+
+
+@pytest.mark.parametrize(
+    "match_id, names, winner", [("W1", ["Alice", "Bob"], 1), ("W2", ["Carol", "Dana"], 3)]
+)
+def test_winner_dialog_has_only_two_player_buttons(
+    menu: MainMenu, entry: PlayerEntry, match_id: str, names: list[str], winner: int
+) -> None:
+    entry.table_count_input.setValue(2)
+    _start_players(entry, ["Alice", "Bob", "Carol", "Dana"])
+    assert menu.tournament is not None
+    dialog = _ResultDialog(menu.tournament, menu, match_id)
+    assert [label.text() for label in dialog.findChildren(QLabel)] == ["Select the winner."]
+    assert not dialog.findChildren(QComboBox)
+    assert not dialog.findChildren(QRadioButton)
+    assert dialog.findChildren(QPushButton) == dialog.winner_buttons
+    assert [button.text() for button in dialog.winner_buttons] == names
+    with pytest.raises(ValueError, match="Choose a winner"):
+        dialog.selection()
+    dialog.winner_buttons[1].click()
+    assert dialog.selection() == (match_id, winner)
+    assert dialog.result() == QDialog.DialogCode.Accepted
+    dialog.deleteLater()
+
+
+def test_recording_result_preserves_bracket_scroll(menu: MainMenu, entry: PlayerEntry) -> None:
+    _start_players(entry, [f"Player {index}" for index in range(_PLAYER_LIMIT)])
+    graphics = menu.bracket_view.graphics
+    QApplication.processEvents()
+    graphics.horizontalScrollBar().setValue(graphics.horizontalScrollBar().maximum())
+    graphics.verticalScrollBar().setValue(graphics.verticalScrollBar().maximum())
+    position = (graphics.horizontalScrollBar().value(), graphics.verticalScrollBar().value())
+    assert position[0] > 0 and position[1] > 0
+    menu._record_result("W1", 0)
+    assert (
+        graphics.horizontalScrollBar().value(),
+        graphics.verticalScrollBar().value(),
+    ) == position
+
+
+def test_invalid_result_keeps_tournament_and_warns(menu: MainMenu, entry: PlayerEntry) -> None:
+    _start_players(entry, ["Alice", "Bob"])
+    original = menu.tournament
+    with patch("main_menu.QMessageBox.warning") as warning:
+        menu._record_result("W1", 10)
+    warning.assert_called_once()
+    assert menu.tournament is original
+
+
+def test_stale_background_schedule_cannot_replace_new_tournament(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    release = Event()
+
+    def delayed_schedule(state: TournamentState) -> SchedulingResult:
+        assert release.wait(timeout=5)
+        return schedule_tables(state)
+
+    with patch("main_menu.schedule_tables", side_effect=delayed_schedule):
+        entry.set_format("Double Elimination")
+        _start_players(entry, ["Alice", "Bob"])
+        menu.bracket_view.back_button.click()
+        menu.single_button.click()
+        try:
+            # Single elimination runs synchronously, so restore its real scheduler.
+            with patch("main_menu.schedule_tables", side_effect=schedule_tables):
+                entry.start_button.click()
+            current = menu.tournament
+        finally:
+            release.set()
+            _wait_workers(menu)
+    assert menu.tournament is current
+    assert current is not None and current.draw.tournament_format == "Single Elimination"
+    assert not menu.bracket_view.scheduling
+
+
+def test_click_active_match_records_result_and_shows_champion(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    _start_players(entry, ["Same", "Same"])
+
+    def choose_winner() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ResultDialog)
+        assert dialog.winner_buttons[0].text() != dialog.winner_buttons[1].text()
+        dialog.winner_buttons[1].click()
+
+    QTimer.singleShot(0, choose_winner)
+    view = menu.bracket_view
+    point = view.graphics.mapFromScene(view.match_rects["W1"].center())
+    QTest.mouseClick(view.graphics.viewport(), Qt.MouseButton.LeftButton, pos=point)
+    _wait_scheduling(menu)
+    assert menu.tournament is not None
+    assert menu.tournament.progress[0].winner_index == 1
+    assert "Champion: Same" in view.status_label.text()
+    with patch("bracket_view._ResultDialog") as dialog:
+        _click_match(menu)
+    dialog.assert_not_called()
+
+
+def test_loading_resumes_free_tables_without_moving_active_match(
+    menu: MainMenu, tmp_path: Path
+) -> None:
+    draw = build_preview(["Alice", "Bob", "Carol", "Dana"], "Single Elimination")
+    original = TournamentState(
+        draw, draw.names, 2, (MatchProgress("W1", "in_progress", table_number=2),), draw_locked=True
+    )
+    path = tmp_path / "active.json"
+    save_tournament(path, original)
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+        menu.load_button.click()
+    _wait_scheduling(menu)
+    assert menu.tournament is not None
+    assert menu.tournament.draw == original.draw
+    assert menu.tournament.progress == (
+        original.progress[0],
+        MatchProgress("W2", "in_progress", table_number=1),
+    )
+
+
+def test_double_scheduling_is_asynchronous_and_close_cleans_worker(
+    menu: MainMenu, entry: PlayerEntry, application: QApplication
+) -> None:
+    entry.set_format("Double Elimination")
+    _start_players(entry, ["Alice", "Bob", "Carol", "Dana"])
+    assert menu.bracket_view.scheduling
+    with patch("bracket_view._ResultDialog") as dialog:
+        menu.bracket_view._open_results("W1")
+    dialog.assert_not_called()
+    closed: list[bool] = []
+
+    def on_last_window_closed() -> None:
+        closed.append(True)
+
+    application.lastWindowClosed.connect(on_last_window_closed)
+    timeout = QTimer()
+    timeout.setSingleShot(True)
+    timeout.timeout.connect(application.quit)
+    application.setQuitOnLastWindowClosed(True)
+    try:
+        timeout.start(3000)
+        QTimer.singleShot(0, menu.close)
+        application.exec()
+    finally:
+        timeout.stop()
+        application.setQuitOnLastWindowClosed(False)
+        application.lastWindowClosed.disconnect(on_last_window_closed)
+    assert not menu._scheduling_threads
+    assert not menu.isVisible()
+    assert closed == [True]
 
 
 def test_menu_opens_with_expected_controls(menu: MainMenu) -> None:
@@ -375,6 +637,7 @@ def test_player_entry_controls_fit_when_resized(
         entry.add_button.click()
     entry.start_button.click()
     menu.bracket_view.back_button.click()
+    menu.single_button.click()
     menu.resize(width, height)
     application.processEvents()
 
@@ -623,7 +886,7 @@ def test_double_preview_shows_both_sides_and_conditional_reset(
 
 
 @pytest.mark.parametrize("player_count", [2, 3, 5, 8, 32])
-def test_preview_returns_to_setup_without_losing_inputs(
+def test_started_bracket_returns_to_menu_without_losing_setup_inputs(
     menu: MainMenu, entry: PlayerEntry, player_count: int
 ) -> None:
     names = [f"Player {index}" for index in range(player_count)]
@@ -635,10 +898,10 @@ def test_preview_returns_to_setup_without_losing_inputs(
     QTest.mouseClick(menu.bracket_view.back_button, Qt.MouseButton.LeftButton)
 
     expected_tables = 8
-    assert entry.isVisible()
+    assert menu.menu_page.isVisible()
     assert entry.player_names() == names
     assert entry.table_count() == expected_tables
-    assert entry.name_input.hasFocus()
+    assert menu.single_button.hasFocus()
 
 
 @pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space])
@@ -653,7 +916,7 @@ def test_preview_back_button_works_with_keyboard(
     back.setFocus()
     QTest.keyClick(back, key)
 
-    assert entry.isVisible()
+    assert menu.menu_page.isVisible()
 
 
 def test_large_double_preview_scrolls_and_match_boxes_do_not_overlap(
@@ -686,6 +949,7 @@ def test_preview_can_be_rebuilt_with_a_different_player_count(
         entry.add_button.click()
     entry.start_button.click()
     menu.bracket_view.back_button.click()
+    menu.single_button.click()
     entry.remove_button.click()
     entry.remove_button.click()
     entry.start_button.click()
@@ -740,6 +1004,98 @@ def saved_state() -> TournamentState:
         table_labels=(TableLabel(2, "Feature table"),),
         draw_locked=True,
     )
+
+
+@pytest.mark.parametrize("table_number", [2, 2147483647])
+@pytest.mark.parametrize("background", ["#ffffff", "#202020"])
+def test_active_match_shows_green_table_number_inside_header(
+    menu: MainMenu, table_number: int, background: str
+) -> None:
+    view = menu.bracket_view
+    palette = view.palette()
+    palette.setColor(QPalette.ColorRole.Base, QColor(background))
+    view.setPalette(palette)
+    draw = build_preview(["Alice", "Bob"], "Single Elimination")
+    view.show_tournament(
+        TournamentState(
+            draw,
+            draw.names,
+            table_number,
+            progress=(MatchProgress("W1", "in_progress", table_number=table_number),),
+            draw_locked=True,
+        )
+    )
+    texts = [item for item in view.scene.items() if isinstance(item, QGraphicsTextItem)]
+    badge = next(item for item in texts if item.toPlainText() == f"Table {table_number}")
+    identifier = next(item for item in texts if item.toPlainText() == "W1")
+
+    color = badge.defaultTextColor()
+    assert color.green() > color.red()
+    assert color.green() > color.blue()
+    assert badge.font().bold()
+    assert badge.pos().y() == identifier.pos().y()
+    assert view.match_rects["W1"].contains(badge.sceneBoundingRect())
+    assert not badge.sceneBoundingRect().intersects(identifier.sceneBoundingRect())
+
+
+def test_table_badge_preserves_custom_name_and_clears_when_draw_changes(
+    menu: MainMenu, saved_state: TournamentState
+) -> None:
+    view = menu.bracket_view
+    view.show_tournament(saved_state)
+    texts = [item for item in view.scene.items() if isinstance(item, QGraphicsTextItem)]
+    badge = next(item for item in texts if item.toPlainText() == "Table 2")
+
+    assert badge.toolTip() == "Feature table"
+    assert sum(item.toPlainText().startswith("Table ") for item in texts) == 1
+    assert any(item.toPlainText() == "In progress · Feature table" for item in texts)
+    assert view.match_rects["W2"].contains(badge.sceneBoundingRect())
+    assert all(
+        not rectangle.contains(badge.sceneBoundingRect())
+        for match_id, rectangle in view.match_rects.items()
+        if match_id != "W2"
+    )
+    view.show_draw(saved_state.draw, saved_state.table_count)
+    assert not any(
+        isinstance(item, QGraphicsTextItem) and item.toPlainText().startswith("Table ")
+        for item in view.scene.items()
+    )
+
+
+@pytest.mark.parametrize(
+    "label",
+    ["Feature table", "Feature table " * 100, "X" * 200],
+    ids=["custom", "long", "unbroken"],
+)
+def test_wrapped_match_notes_fit_inside_cards_with_full_tooltips(
+    menu: MainMenu, label: str
+) -> None:
+    view = menu.bracket_view
+    draw = build_preview(["Alice", "Bob", "Carol", "Dana"], "Double Elimination")
+    view.show_tournament(
+        TournamentState(
+            draw,
+            draw.names,
+            1,
+            progress=(MatchProgress("W1", "in_progress", table_number=1),),
+            table_labels=(TableLabel(1, label),),
+            draw_locked=True,
+        )
+    )
+    for match_id, note in [
+        ("W1", f"In progress · {label}"),
+        ("RESET", "If losers' finalist wins GF"),
+    ]:
+        item = next(
+            item
+            for item in view.scene.items()
+            if isinstance(item, QGraphicsTextItem) and item.toolTip() == note
+        )
+        assert view.match_rects[match_id].contains(item.sceneBoundingRect())
+        if label == "Feature table" or match_id == "RESET":
+            assert item.toPlainText() == note
+        else:
+            assert item.toPlainText().endswith("…")
 
 
 def test_save_as_writes_exact_draw_and_setup_order(
@@ -803,7 +1159,7 @@ def test_loaded_progress_can_be_saved_again_without_loss(
     assert load_tournament(copy) == saved_state
 
 
-def test_unstarted_loaded_draw_can_return_to_setup(menu: MainMenu, tmp_path: Path) -> None:
+def test_unstarted_loaded_draw_starts_without_reshuffling(menu: MainMenu, tmp_path: Path) -> None:
     draw = build_preview(["Alice", "Bob", "Carol"], "Single Elimination")
     state = TournamentState(draw, tuple(reversed(draw.names)), 5)
     path = tmp_path / "before play.json"
@@ -811,10 +1167,14 @@ def test_unstarted_loaded_draw_can_return_to_setup(menu: MainMenu, tmp_path: Pat
     with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")):
         menu.load_button.click()
     menu.bracket_view.back_button.click()
-    assert menu.player_entry.isVisible()
+    assert menu.menu_page.isVisible()
+    assert menu.tournament is not None
+    assert menu.tournament.draw == draw
+    assert menu.tournament.draw_locked
+    assert menu.tournament.progress == (MatchProgress("W1", "in_progress", table_number=1),)
     assert menu.player_entry.player_names() == list(state.entry_names)
     assert menu.player_entry.format_label.text() == state.draw.tournament_format
-    assert menu.player_entry.name_input.hasFocus()
+    assert menu.single_button.hasFocus()
     assert menu.player_entry.count_label.text() == "Players: 3 / 32"
     assert menu.player_entry.start_button.isEnabled()
 

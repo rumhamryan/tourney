@@ -1,6 +1,6 @@
 [project]
 name = "template-project"
-version = "0.1.7"
+version = "0.1.8"
 description = "A template project with pre-commit, uv, ruff, and mypy setup."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,6 +8,7 @@ dependencies = [
     "requests",
     "pyyaml",
     "pyside6>=6.11.2",
+    "ortools>=9.15.6755",
 ]
 
 [project.optional-dependencies]

@@ -6,7 +6,8 @@ from typing import Any
 import pytest
 
 from bracket_preview import Draw, Source, build_preview
-from tournament_state import MatchProgress, TableLabel, TournamentState
+from table_scheduler import schedule_tables
+from tournament_state import MatchProgress, TableLabel, TournamentState, record_result
 from tournament_storage import dumps_tournament, loads_tournament
 
 
@@ -33,6 +34,19 @@ def test_json_round_trip_preserves_every_parameter(state: TournamentState) -> No
     assert "Zoë" in contents and "李" in contents
     assert loads_tournament(contents) == state
     assert loads_tournament(contents).draw.matches == state.draw.matches
+
+
+def test_scheduled_results_round_trip_without_solver_metadata() -> None:
+    draw = build_preview(["Alice", "Alice", "李", "Dana"], "Single Elimination")
+    state = TournamentState(draw, draw.names, 2, table_labels=(TableLabel(1, "Feature table"),))
+    active = schedule_tables(state).state
+    completed = record_result(active, "W1", 1)
+    resumed = schedule_tables(completed).state
+    contents = dumps_tournament(resumed)
+    assert loads_tournament(contents) == resumed
+    assert json.loads(contents)["schema_version"] == 1
+    assert "algorithm" not in json.loads(contents)
+    assert resumed.table_labels == state.table_labels
 
 
 @pytest.mark.parametrize("count", range(2, 33))

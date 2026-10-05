@@ -16,20 +16,41 @@ list has focus. Blank names are rejected, and the limit is 32 players.
 Repeated names are allowed.
 
 Start becomes available after adding at least two players and leaving no name
-waiting to be added. Clicking it shuffles the players and opens a scrollable
-bracket preview. Double elimination shows winners' and losers' sides, a grand
+waiting to be added. Clicking it shuffles the players, locks the draw, assigns
+ready matches to tables, and opens a scrollable bracket. Double elimination
+shows winners' and losers' sides, a grand
 final, and a reset played only if the losers' finalist wins the first final.
 Later match slots show their source match numbers. Byes advance automatically
-in the preview. Long names can be read in full by hovering over them.
+in the bracket. Long names can be read in full by hovering over them.
 
-Back to Setup preserves the original player list and table count. Starting
-again creates a new randomized preview. Result entry and table assignments
-will be added separately.
+Click an active match to open its winner dialog.
+The dialog says **Select the winner.** and contains two
+player buttons. Clicking a player records the winner immediately. The window
+title identifies the match and table; repeated names are distinguished as top
+and bottom players. Escape or the window's close button dismisses the dialog
+without recording a result. Recording a result advances players and immediately
+assigns ready matches to free tables. The champion appears when the final is
+complete. Results cannot currently be undone or corrected.
 
 Back to Menu preserves the table count, player list, and any unfinished name, including
 when choosing a different format.
+Save the current tournament before starting another one; Start creates a new draw.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
+
+## Automatic table scheduling
+
+Single elimination uses Hu's highest-level-first algorithm. Double elimination
+uses OR-Tools CP-SAT to minimize the modeled remaining duration, with a one-second
+solve limit in a background thread. If the solver does not prove optimality, the
+app fills tables using critical-path priority. Both formats preserve matches
+already running and use the lowest available table numbers.
+
+Scheduling assumes identical tables and equal match durations, with no rest
+periods or match clocks. Running matches are modeled with one unit remaining.
+The double-elimination model includes a possible final reset until results rule
+it out; that match is assigned only when required. Any optimality guarantee
+applies to these assumptions, rather than actual elapsed tournament time.
 
 ## Window sizing
 
@@ -46,6 +67,8 @@ Use **Load Tournament** on the main menu to restore it. Loading preserves the
 exact draw; it never reshuffles the players. Ctrl+Shift+S opens Save As on the
 bracket screen, and Ctrl+O opens Load from the main menu. macOS uses the platform's
 standard shortcuts.
+Loading also locks the draw, preserves existing assignments and results, and
+assigns ready matches to any free tables.
 
 The versioned snapshot includes the original setup order, randomized player
 order, format, full winners'/losers' match graph, conditional reset, table count,
@@ -57,10 +80,11 @@ Automatic byes, readiness, reset eligibility, and the champion are derived from
 the saved graph and results.
 
 Loaded progress appears in the bracket, including winners and occupied tables.
+Matches in progress show their table number in bold green beside the match number.
+Hover over the table number to read its custom name, if configured. Match notes
+wrap onto two lines; longer notes keep their full text in a tooltip.
 A started tournament returns to the main menu instead of editable setup to keep
-its draw locked. Scoring and table-assignment controls will be added separately;
-their state is already supported by this file format. This step provides manual
-saves; automatic recovery saves are a later step.
+its draw locked. Saves are manual; automatic recovery saves are a later step.
 
 Invalid or unsupported files are rejected before changing the current tournament.
 Saving flushes a temporary file beside the destination and replaces the old file

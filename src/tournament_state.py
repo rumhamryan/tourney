@@ -1,7 +1,7 @@
 """Complete, immutable tournament snapshots independent of the desktop UI."""
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from bracket_preview import Draw, PreviewMatch, Source, build_preview
 
@@ -176,3 +176,56 @@ def validate_tournament(state: TournamentState) -> None:
         raise ValueError("The draw-lock flag must be true or false.")
     _validate_tables(state)
     resolved_outcomes(state)
+
+
+def match_players(state: TournamentState, match_id: str) -> tuple[int | None, int | None]:
+    """Resolve the two player indexes for an existing match, including byes."""
+    match = next((match for match in state.draw.matches if match.identifier == match_id), None)
+    if match is None:
+        raise ValueError("Unknown match.")
+    outcomes = resolved_outcomes(state)
+    return _resolve(match.slots[0], outcomes), _resolve(match.slots[1], outcomes)
+
+
+def ready_matches(state: TournamentState) -> tuple[PreviewMatch, ...]:
+    """Return pending matches with two resolved players and eligible dependencies."""
+    outcomes = resolved_outcomes(state)
+    progress = _progress_by_id(state)
+    return tuple(
+        match
+        for match in state.draw.matches
+        if progress.get(match.identifier, MatchProgress(match.identifier)).status == "pending"
+        and match.identifier not in outcomes
+        and _ready(match, outcomes, state.draw)
+        and all(_resolve(source, outcomes) is not None for source in match.slots)
+    )
+
+
+def record_result(state: TournamentState, match_id: str, winner_index: int) -> TournamentState:
+    """Complete an active match without mutating its snapshot or earlier results."""
+    validate_tournament(state)
+    active = next((item for item in state.progress if item.match_id == match_id), None)
+    if active is None or active.status != "in_progress":
+        raise ValueError("Only a match in progress can have its result recorded.")
+    if type(winner_index) is not int or winner_index not in match_players(state, match_id):
+        raise ValueError("Choose one of this match's players as the winner.")
+    completed = MatchProgress(match_id, "completed", winner_index=winner_index)
+    result = replace(
+        state, progress=tuple(completed if item == active else item for item in state.progress)
+    )
+    validate_tournament(result)
+    return result
+
+
+def champion_index(state: TournamentState) -> int | None:
+    """Return the champion only once the applicable final has been completed."""
+    outcomes = resolved_outcomes(state)
+    if state.draw.tournament_format == "Single Elimination":
+        return outcomes.get(state.draw.matches[-1].identifier, (None, None))[0]
+    if "RESET" in outcomes:
+        return outcomes["RESET"][0]
+    if "GF" in outcomes:
+        final = next(match for match in state.draw.matches if match.identifier == "GF")
+        if outcomes["GF"][0] == _resolve(final.slots[0], outcomes):
+            return outcomes["GF"][0]
+    return None

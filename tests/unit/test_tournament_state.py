@@ -8,6 +8,10 @@ from tournament_state import (
     MatchProgress,
     TableLabel,
     TournamentState,
+    champion_index,
+    match_players,
+    ready_matches,
+    record_result,
     resolved_outcomes,
     validate_tournament,
 )
@@ -17,6 +21,84 @@ from tournament_state import (
 def state() -> TournamentState:
     draw = build_preview(["Alice", "Bob", "Carol", "Dana"], "Single Elimination")
     return TournamentState(draw, tuple(reversed(draw.names)), 4)
+
+
+def test_record_result_releases_table_and_unlocks_next_match(state: TournamentState) -> None:
+    active = replace(
+        state,
+        draw_locked=True,
+        progress=(
+            MatchProgress("W1", "in_progress", table_number=1),
+            MatchProgress("W2", "completed", winner_index=2),
+        ),
+    )
+    completed = record_result(active, "W1", 1)
+    assert completed.progress[0] == MatchProgress("W1", "completed", winner_index=1)
+    assert completed.draw_locked
+    assert match_players(completed, "W3") == (1, 2)
+    assert [match.identifier for match in ready_matches(completed)] == ["W3"]
+    assert active.progress[0].table_number == 1
+
+
+@pytest.mark.parametrize("match_id, winner", [("missing", 0), ("W2", 0), ("W1", 2), ("W1", True)])
+def test_record_result_rejects_invalid_selection(
+    state: TournamentState, match_id: str, winner: int
+) -> None:
+    active = replace(
+        state, draw_locked=True, progress=(MatchProgress("W1", "in_progress", table_number=1),)
+    )
+    with pytest.raises(ValueError):
+        record_result(active, match_id, winner)
+
+
+def test_completed_result_cannot_be_overwritten(state: TournamentState) -> None:
+    completed = replace(
+        state, draw_locked=True, progress=(MatchProgress("W1", "completed", winner_index=0),)
+    )
+    with pytest.raises(ValueError):
+        record_result(completed, "W1", 1)
+
+
+def test_duplicate_names_use_player_indexes() -> None:
+    draw = build_preview(["Same", "Same"], "Single Elimination")
+    state = TournamentState(
+        draw, draw.names, 1, (MatchProgress("W1", "in_progress", table_number=1),), draw_locked=True
+    )
+    assert record_result(state, "W1", 1).progress[0].winner_index == 1
+
+
+def test_unknown_match_players_are_rejected(state: TournamentState) -> None:
+    with pytest.raises(ValueError):
+        match_players(state, "missing")
+
+
+@pytest.mark.parametrize("lower_wins", [False, True])
+def test_champion_waits_for_applicable_final(lower_wins: bool) -> None:
+    draw = build_preview(["Alice", "Bob"], "Double Elimination")
+    state = TournamentState(
+        draw,
+        draw.names,
+        1,
+        (
+            MatchProgress("W1", "completed", winner_index=0),
+            MatchProgress("GF", "in_progress", table_number=1),
+        ),
+        draw_locked=True,
+    )
+    assert champion_index(state) is None
+    state = record_result(state, "GF", int(lower_wins))
+    assert champion_index(state) == (None if lower_wins else 0)
+    if lower_wins:
+        state = replace(
+            state, progress=(*state.progress, MatchProgress("RESET", "in_progress", table_number=1))
+        )
+        assert champion_index(record_result(state, "RESET", 1)) == 1
+
+
+def test_ready_matches_rejects_invalid_progress(state: TournamentState) -> None:
+    invalid = replace(state, progress=(MatchProgress("missing"),))
+    with pytest.raises(ValueError):
+        ready_matches(invalid)
 
 
 @pytest.mark.parametrize("count", range(2, 33))

@@ -1,10 +1,11 @@
 """Launch the Tourney desktop main menu."""
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, Signal, Slot
-from PySide6.QtGui import QFont, QKeySequence, QResizeEvent, QShortcut
+from PySide6.QtCore import Qt, QThread, Signal, Slot
+from PySide6.QtGui import QCloseEvent, QFont, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -21,7 +22,8 @@ from bracket import shuffle_names
 from bracket_preview import build_preview
 from bracket_view import BracketView
 from player_entry import PlayerEntry
-from tournament_state import TournamentState
+from table_scheduler import SchedulingResult, schedule_tables
+from tournament_state import TournamentState, champion_index, record_result
 from tournament_storage import load_tournament, save_tournament
 from ui_metrics import (
     BODY_POINT_SIZE,
@@ -36,6 +38,24 @@ from ui_metrics import (
 _SCALE_CHANGE_THRESHOLD = 0.01
 
 
+class _SchedulingThread(QThread):
+    scheduled = Signal(object, int)
+    failed = Signal(str, int)
+
+    def __init__(self, state: TournamentState, generation: int, parent: QWidget) -> None:
+        super().__init__(parent)
+        self._state = state
+        self._generation = generation
+
+    def run(self) -> None:
+        try:
+            result = schedule_tables(self._state)
+        except Exception as error:
+            self.failed.emit(str(error), self._generation)
+        else:
+            self.scheduled.emit(result, self._generation)
+
+
 class MainMenu(QDialog):
     """Choose a tournament format or exit the application."""
 
@@ -44,6 +64,7 @@ class MainMenu(QDialog):
     def __init__(self) -> None:
         super().__init__()
         self.tournament: TournamentState | None = None
+        self._init_scheduling()
         self._ui_scale = -1.0
         self.setWindowTitle("Tourney")
         self.setWindowFlag(Qt.WindowType.WindowMinMaxButtonsHint)
@@ -72,6 +93,12 @@ class MainMenu(QDialog):
         self.load_button.clicked.connect(self._load_tournament)
         self.exit_button.clicked.connect(self.close)
         self.single_button.setFocus()
+
+    def _init_scheduling(self) -> None:
+        self.scheduling_result: SchedulingResult | None = None
+        self._schedule_generation = 0
+        self._scheduling_threads: set[_SchedulingThread] = set()
+        self._closing = False
 
     def _build_layout(self, title: QLabel, subtitle: QLabel) -> None:
         self.menu_page = QWidget()
@@ -104,6 +131,7 @@ class MainMenu(QDialog):
         self.bracket_view = BracketView()
         self.bracket_view.back_requested.connect(self._show_setup)
         self.bracket_view.save_requested.connect(self._save_tournament)
+        self.bracket_view.result_requested.connect(self._record_result)
         self.pages = QStackedLayout(self)
         self.pages.setContentsMargins(0, 0, 0, 0)
         self.pages.addWidget(self.menu_page)
@@ -173,14 +201,85 @@ class MainMenu(QDialog):
         self._present_tournament(TournamentState(draw, tuple(names), table_count))
 
     def _present_tournament(self, state: TournamentState) -> None:
-        self.bracket_view.show_tournament(state)
-        self.tournament = state
+        self.tournament = replace(state, draw_locked=True)
+        self.bracket_view.show_tournament(self.tournament)
         for button in [self.single_button, self.double_button, self.load_button, self.exit_button]:
             button.setDefault(False)
         self.pages.setCurrentWidget(self.bracket_view)
         self.bracket_view.graphics.horizontalScrollBar().setValue(0)
         self.bracket_view.graphics.verticalScrollBar().setValue(0)
         self.bracket_view.back_button.setFocus()
+        self._schedule_tables()
+
+    def _schedule_tables(self) -> None:
+        assert self.tournament is not None
+        self._schedule_generation += 1
+        self.scheduling_result = None
+        self.bracket_view.set_scheduling(True)
+        if self.tournament.draw.tournament_format == "Single Elimination":
+            self._apply_schedule(schedule_tables(self.tournament), self._schedule_generation)
+            return
+        worker = _SchedulingThread(self.tournament, self._schedule_generation, self)
+        self._scheduling_threads.add(worker)
+        worker.scheduled.connect(self._apply_schedule)
+        worker.failed.connect(self._schedule_failed)
+        worker.finished.connect(self._retire_worker)
+        worker.start()
+
+    @Slot(object, int)
+    def _apply_schedule(self, result: SchedulingResult, generation: int) -> None:
+        if generation != self._schedule_generation or self._closing:
+            return
+        graphics = self.bracket_view.graphics
+        position = (graphics.horizontalScrollBar().value(), graphics.verticalScrollBar().value())
+        self.tournament = result.state
+        self.scheduling_result = result
+        self.bracket_view.set_scheduling(False)
+        self.bracket_view.show_tournament(result.state)
+        graphics.horizontalScrollBar().setValue(position[0])
+        graphics.verticalScrollBar().setValue(position[1])
+
+    @Slot(str, int)
+    def _schedule_failed(self, message: str, generation: int) -> None:
+        if generation != self._schedule_generation or self._closing:
+            return
+        self.bracket_view.set_scheduling(False)
+        self.bracket_view.status_label.setText(f"Could not schedule matches: {message}")
+
+    @Slot()
+    def _retire_worker(self) -> None:
+        worker = self.sender()
+        assert isinstance(worker, _SchedulingThread)
+        self._scheduling_threads.discard(worker)
+        worker.deleteLater()
+        if self._closing and not self._scheduling_threads:
+            self.close()
+
+    @Slot(str, int)
+    def _record_result(self, match_id: str, winner_index: int) -> None:
+        if self.tournament is None or self.bracket_view.scheduling:
+            return
+        try:
+            self.tournament = record_result(self.tournament, match_id, winner_index)
+        except ValueError as error:
+            QMessageBox.warning(self, "Could Not Record Result", str(error))
+            return
+        self._schedule_tables()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Let bounded native solves finish before their QThreads are destroyed."""
+        self._closing = True
+        self._schedule_generation += 1
+        if self._scheduling_threads:
+            self.setEnabled(False)
+            event.ignore()
+        else:
+            self.done(QDialog.DialogCode.Rejected)
+            event.accept()
+
+    def reject(self) -> None:
+        """Route Escape through the same worker cleanup as closing the window."""
+        self.close()
 
     @Slot()
     def _show_setup(self) -> None:
@@ -239,7 +338,12 @@ class MainMenu(QDialog):
         )
         self.selection_label.setText(f"Selected: {state.draw.tournament_format}")
         self._present_tournament(state)
-        self.bracket_view.status_label.setText(f"Loaded: {selected}")
+        if (
+            self.tournament is not None
+            and not self.bracket_view.scheduling
+            and champion_index(self.tournament) is None
+        ):
+            self.bracket_view.status_label.setText(f"Loaded: {selected}")
 
 
 def main() -> int:

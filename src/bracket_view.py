@@ -1,7 +1,10 @@
-"""Display a scrollable, read-only tournament draw."""
+"""Display tournament progress and collect results for active matches."""
+
+from collections.abc import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QColor,
     QFont,
     QFontMetrics,
     QKeySequence,
@@ -13,7 +16,10 @@ from PySide6.QtGui import (
     QTransform,
 )
 from PySide6.QtWidgets import (
+    QDialog,
+    QGraphicsRectItem,
     QGraphicsScene,
+    QGraphicsSceneMouseEvent,
     QGraphicsTextItem,
     QGraphicsView,
     QHBoxLayout,
@@ -24,7 +30,14 @@ from PySide6.QtWidgets import (
 )
 
 from bracket_preview import Draw, PreviewMatch, Source
-from tournament_state import Outcome, TournamentState, resolved_outcomes, validate_tournament
+from tournament_state import (
+    Outcome,
+    TournamentState,
+    champion_index,
+    match_players,
+    resolved_outcomes,
+    validate_tournament,
+)
 from ui_metrics import (
     BODY_POINT_SIZE,
     BUTTON_HEIGHT,
@@ -33,11 +46,84 @@ from ui_metrics import (
     PAGE_TITLE_POINT_SIZE,
 )
 
-_CARD_WIDTH = 344
+_CARD_WIDTH = 384
 _CARD_HEIGHT = 164
-_COLUMN_STEP = 420
+_COLUMN_STEP = 460
 _ROW_STEP = 204
 _LINE_WIDTH = 2.0
+_LIGHT_BACKGROUND_THRESHOLD = 128
+
+
+class _MatchCard(QGraphicsRectItem):
+    def __init__(self, rectangle: QRectF, identifier: str, callback: Callable[[str], None]) -> None:
+        super().__init__(rectangle)
+        self._identifier = identifier
+        self._callback = callback
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event: QGraphicsSceneMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            event.accept()
+            self._callback(self._identifier)
+        else:
+            super().mousePressEvent(event)
+
+
+class _ResultDialog(QDialog):
+    def __init__(self, state: TournamentState, parent: QWidget, match_id: str = "") -> None:
+        super().__init__(parent)
+        active = [item for item in state.progress if item.status == "in_progress"]
+        match = next((item for item in active if item.match_id == match_id), None)
+        if not match_id and active:
+            match = active[0]
+        if match is None:
+            raise ValueError("Choose a match in progress.")
+        self._match_id = match.match_id
+        self._winner: int | None = None
+        self.setWindowTitle(f"Record Result · {match.match_id} · Table {match.table_number}")
+        self.setMinimumWidth(480)
+        self.winner_buttons: list[QPushButton] = []
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("Select the winner."))
+        players = match_players(state, self._match_id)
+        assert players[0] is not None and players[1] is not None
+        duplicate = state.draw.names[players[0]] == state.draw.names[players[1]]
+        for player, position in zip(players, ["Top player", "Bottom player"], strict=True):
+            assert player is not None
+            label = state.draw.names[player]
+            if duplicate:
+                label = f"{position}: {label}"
+            button = self._player_button(label, player)
+            self.winner_buttons.append(button)
+            layout.addWidget(button)
+        self.setTabOrder(self.winner_buttons[0], self.winner_buttons[1])
+
+    def _player_button(self, label: str, player: int) -> QPushButton:
+        button = QPushButton()
+        button.setText(
+            QFontMetrics(button.font())
+            .elidedText(label, Qt.TextElideMode.ElideRight, 520)
+            .replace("&", "&&")
+        )
+        button.setToolTip(label)
+        button.setAccessibleName(label)
+        button.setMinimumHeight(48)
+        button.setAutoDefault(False)
+        button.clicked.connect(lambda: self._choose_winner(player))
+        for key in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
+            shortcut = QShortcut(QKeySequence(key), button)
+            shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
+            shortcut.activated.connect(button.click)
+        return button
+
+    def _choose_winner(self, player: int) -> None:
+        self._winner = player
+        self.accept()
+
+    def selection(self) -> tuple[str, int]:
+        if self._winner is None:
+            raise ValueError("Choose a winner before recording a result.")
+        return self._match_id, self._winner
 
 
 class BracketView(QWidget):
@@ -45,6 +131,7 @@ class BracketView(QWidget):
 
     back_requested = Signal()
     save_requested = Signal()
+    result_requested = Signal(str, int)
 
     def __init__(self) -> None:
         super().__init__()
@@ -52,7 +139,10 @@ class BracketView(QWidget):
         self.tournament: TournamentState | None = None
         self.outcomes: dict[str, Outcome] = {}
         self.table_count = 1
+        self.scheduling = False
         self.match_rects: dict[str, QRectF] = {}
+        self._card_width = float(_CARD_WIDTH)
+        self._card_height = float(_CARD_HEIGHT)
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
         self.status_label = QLabel()
@@ -65,6 +155,10 @@ class BracketView(QWidget):
         self.graphics.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.graphics.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.graphics.setMinimumSize(260, 200)
+        self._build_actions()
+        self._build_layout()
+
+    def _build_actions(self) -> None:
         self.back_button = QPushButton("&Back to Setup")
         self.back_button.setMinimumHeight(40)
         self.back_button.setAutoDefault(False)
@@ -73,7 +167,6 @@ class BracketView(QWidget):
         self.save_button.setMinimumHeight(40)
         self.save_button.setAutoDefault(False)
         self.save_button.clicked.connect(self.save_requested.emit)
-        self._build_layout()
 
     def _build_layout(self) -> None:
         self._page_layout = QVBoxLayout(self)
@@ -139,8 +232,9 @@ class BracketView(QWidget):
         self.status_label.clear()
         locked = self.tournament is not None and self.tournament.draw_locked
         self.back_button.setText("&Back to Menu" if locked else "&Back to Setup")
+        self.title_label.setText("Tournament Bracket" if locked else "Bracket Preview")
         self.hint_label.setText(
-            "Scroll to see all rounds. The draw is locked because play has started."
+            "Tables are assigned automatically. Click an active match to report its winner."
             if locked
             else "Scroll to see all rounds. Return to setup to edit the draw."
         )
@@ -148,6 +242,7 @@ class BracketView(QWidget):
         self.summary_label.setText(
             f"{draw.tournament_format} · {len(draw.names)} players · {table_count} {table_word}"
         )
+        self._measure_cards()
         self.scene.clear()
         self.scene.setBackgroundBrush(self.palette().brush(QPalette.ColorRole.Window))
         self.match_rects.clear()
@@ -161,6 +256,42 @@ class BracketView(QWidget):
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-20, -20, 20, 20))
         self.graphics.horizontalScrollBar().setValue(0)
         self.graphics.verticalScrollBar().setValue(0)
+        self.set_scheduling(self.scheduling)
+        if self.tournament is not None:
+            champion = champion_index(self.tournament)
+            if champion is not None:
+                self.status_label.setText(f"Champion: {self.tournament.draw.names[champion]}")
+
+    def set_scheduling(self, busy: bool) -> None:
+        """Disable result entry while a scheduling snapshot is being computed."""
+        self.scheduling = busy
+        if busy:
+            self.status_label.setText("Scheduling matches…")
+
+    def _open_results(self, match_id: str = "") -> None:
+        if self.scheduling or self.tournament is None:
+            return
+        if not any(
+            item.match_id == match_id and item.status == "in_progress"
+            for item in self.tournament.progress
+        ):
+            return
+        dialog = _ResultDialog(self.tournament, self, match_id)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.result_requested.emit(*dialog.selection())
+
+    def _measure_cards(self) -> None:
+        font = QFont(self.font())
+        font.setPointSize(BODY_POINT_SIZE)
+        self._card_height = max(_CARD_HEIGHT, 136 + 2 * QFontMetrics(font).lineSpacing())
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        self._card_width = max(
+            _CARD_WIDTH,
+            metrics.horizontalAdvance("RESET")
+            + metrics.horizontalAdvance(f"Table {self.table_count}")
+            + 40,
+        )
 
     def _place_section(self, matches: list[PreviewMatch], title: str, top: float) -> float:
         self._text(title, QPointF(20, top), bold=True)
@@ -170,26 +301,31 @@ class BracketView(QWidget):
         rounds: dict[int, list[PreviewMatch]] = {}
         for match in matches:
             rounds.setdefault(match.round_number, []).append(match)
-        height = max(len(group) for group in rounds.values()) * _ROW_STEP
+        height = max(len(group) for group in rounds.values()) * (
+            self._card_height + _ROW_STEP - _CARD_HEIGHT
+        )
         for round_number, group in rounds.items():
-            x = 20 + (round_number - 1) * _COLUMN_STEP
+            x = 20 + (round_number - 1) * (self._card_width + _COLUMN_STEP - _CARD_WIDTH)
             self._text(f"Round {round_number}", QPointF(x, top + 44))
             for index, match in enumerate(group):
-                y = top + 96 + (index + 0.5) * height / len(group) - _CARD_HEIGHT / 2
-                self._card(match, QRectF(x, y, _CARD_WIDTH, _CARD_HEIGHT))
+                y = top + 96 + (index + 0.5) * height / len(group) - self._card_height / 2
+                self._card(match, QRectF(x, y, self._card_width, self._card_height))
         return top + 96 + height
 
     def _place_finals(self, draw: Draw) -> None:
         columns = max(match.round_number for match in draw.matches if match.section != "Finals")
-        x = 20 + columns * _COLUMN_STEP
+        column_step = self._card_width + _COLUMN_STEP - _CARD_WIDTH
+        x = 20 + columns * column_step
         upper = [rect.center().y() for key, rect in self.match_rects.items() if key.startswith("W")]
         lower = [rect.center().y() for key, rect in self.match_rects.items() if key.startswith("L")]
         y = (sum(upper) / len(upper) + (sum(lower) / len(lower) if lower else max(upper) + 160)) / 2
-        self._text("Grand final", QPointF(x, y - _CARD_HEIGHT / 2 - 44), bold=True)
+        self._text("Grand final", QPointF(x, y - self._card_height / 2 - 44), bold=True)
         for match in draw.matches:
             if match.section == "Finals":
-                self._card(match, QRectF(x, y - _CARD_HEIGHT / 2, _CARD_WIDTH, _CARD_HEIGHT))
-                x += _COLUMN_STEP
+                self._card(
+                    match, QRectF(x, y - self._card_height / 2, self._card_width, self._card_height)
+                )
+                x += column_step
 
     def _text(
         self,
@@ -205,6 +341,7 @@ class BracketView(QWidget):
         item = self.scene.addText(text, font)
         item.setDefaultTextColor(self.palette().color(color_role))
         item.setPos(position)
+        item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         return item
 
     def _slot_label(self, source: Source) -> str:
@@ -223,22 +360,64 @@ class BracketView(QWidget):
         self.match_rects[match.identifier] = rectangle
         pen = QPen(Qt.GlobalColor.white)
         pen.setWidthF(_LINE_WIDTH)
-        self.scene.addRect(
-            rectangle,
-            pen,
-            self.palette().brush(QPalette.ColorRole.Base),
+        active = self.tournament is not None and any(
+            item.match_id == match.identifier and item.status == "in_progress"
+            for item in self.tournament.progress
         )
+        card = (
+            _MatchCard(rectangle, match.identifier, self._open_results)
+            if active
+            else QGraphicsRectItem(rectangle)
+        )
+        card.setPen(pen)
+        card.setBrush(self.palette().brush(QPalette.ColorRole.Base))
+        self.scene.addItem(card)
         origin = rectangle.topLeft()
         self._card_text(match.identifier, origin + QPointF(12, 8), bold=True)
+        self._table_badge(match, rectangle)
         for source, offset in zip(match.slots, [44, 80], strict=True):
             self._card_text(self._slot_label(source), origin + QPointF(12, offset))
-        self._card_text(self._match_note(match), origin + QPointF(12, 116))
+        self._card_note(self._match_note(match), origin + QPointF(12, 116))
+
+    def _table_badge(self, match: PreviewMatch, rectangle: QRectF) -> None:
+        if self.tournament is None:
+            return
+        progress = next(
+            (item for item in self.tournament.progress if item.match_id == match.identifier), None
+        )
+        if progress is None or progress.status != "in_progress":
+            return
+        assert progress.table_number is not None
+        text = f"Table {progress.table_number}"
+        item = self._text(text, rectangle.topLeft() + QPointF(12, 8), bold=True)
+        item.setX(rectangle.right() - 12 - item.boundingRect().width())
+        background = self.palette().color(QPalette.ColorRole.Base)
+        item.setDefaultTextColor(
+            QColor(
+                "#15803d" if background.lightness() >= _LIGHT_BACKGROUND_THRESHOLD else "#4ade80"
+            )
+        )
+        labels = {table.number: table.label for table in self.tournament.table_labels}
+        item.setToolTip(labels.get(progress.table_number, text))
+
+    def _card_note(self, text: str, position: QPointF) -> None:
+        item = self._text(text, position, color_role=QPalette.ColorRole.Text)
+        item.setTextWidth(self._card_width - 24)
+        item.setToolTip(text)
+        metrics = QFontMetrics(item.font())
+        candidate = metrics.elidedText(
+            text, Qt.TextElideMode.ElideRight, round(2 * (self._card_width - 32))
+        )
+        item.setPlainText(candidate)
+        while len(candidate) > 1 and item.boundingRect().height() > 2 * metrics.lineSpacing() + 8:
+            candidate = candidate[:-2].rstrip() + "…"
+            item.setPlainText(candidate)
 
     def _card_text(self, text: str, position: QPointF, *, bold: bool = False) -> None:
         item = self._text(text, position, bold=bold, color_role=QPalette.ColorRole.Text)
         item.setPlainText(
             QFontMetrics(item.font()).elidedText(
-                text, Qt.TextElideMode.ElideRight, _CARD_WIDTH - 32
+                text, Qt.TextElideMode.ElideRight, round(self._card_width - 32)
             )
         )
         item.setToolTip(text)
