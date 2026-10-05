@@ -1,4 +1,25 @@
-# Template Project
+# Tourney
+
+## Run the main menu
+
+From the repository directory, run:
+
+```sh
+uv run python src/main_menu.py
+```
+
+The menu offers Single Elimination, Double Elimination, and Exit. Choosing
+a format displays the selection; tournament setup will be added separately.
+Use Tab or Shift+Tab to move between buttons and Enter or Space to activate
+the focused button. The window can be resized.
+
+Run the UI checks without opening a desktop window:
+
+```sh
+uv run pytest tests/integration/test_main_menu.py
+```
+
+## Repository tooling
 
 This is a template repository setup with modern Python tooling:
 
