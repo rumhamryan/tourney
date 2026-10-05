@@ -4,8 +4,9 @@ from unittest.mock import patch
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QGraphicsTextItem
 
+from bracket_preview import build_preview
 from main_menu import MainMenu, main
 from player_entry import PlayerEntry
 
@@ -367,6 +368,7 @@ def test_player_entry_controls_fit_when_resized(
         entry.name_input.setText(f"Player {index}")
         entry.add_button.click()
     entry.start_button.click()
+    menu.bracket_view.back_button.click()
     menu.resize(width, height)
     application.processEvents()
 
@@ -503,12 +505,13 @@ def test_enter_to_add_second_player_does_not_start(
 
 
 def test_start_snapshot_does_not_change_when_players_are_edited(
-    entry: PlayerEntry, start_requests: list[tuple[str, list[str], int]]
+    menu: MainMenu, entry: PlayerEntry, start_requests: list[tuple[str, list[str], int]]
 ) -> None:
     for name in ["Alice", "Alice"]:
         entry.name_input.setText(name)
         entry.add_button.click()
     entry.start_button.click()
+    menu.bracket_view.back_button.click()
     entry.remove_button.click()
 
     assert start_requests == [("Single Elimination", ["Alice", "Alice"], 1)]
@@ -566,3 +569,152 @@ def test_back_preserves_table_count_when_changing_format(
 
     assert entry.format_label.text() == "Double Elimination"
     assert entry.table_count() == expected_count
+
+
+def test_start_opens_preview_with_shuffled_players_and_table_count(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    names = ["Alice", "Bob", "Carol"]
+    for name in names:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.table_count_input.setValue(4)
+    with patch("main_menu.shuffle_names", side_effect=lambda players: list(reversed(players))):
+        entry.start_button.click()
+
+    view = menu.bracket_view
+    assert view.isVisible()
+    assert not entry.isVisible()
+    assert view.draw is not None
+    assert view.draw.names == tuple(reversed(names))
+    assert view.draw.tournament_format == "Single Elimination"
+    expected_tables = 4
+    assert view.table_count == expected_tables
+    assert "4 tables" in view.summary_label.text()
+    assert entry.player_names() == names
+
+
+def test_double_preview_shows_both_sides_and_conditional_reset(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    entry.back_button.click()
+    menu.double_button.click()
+    for index in range(8):
+        entry.name_input.setText(f"Player {index}")
+        entry.add_button.click()
+    entry.start_button.click()
+    texts = [
+        item.toPlainText()
+        for item in menu.bracket_view.scene.items()
+        if isinstance(item, QGraphicsTextItem)
+    ]
+
+    assert "Winners' bracket" in texts
+    assert "Losers' bracket" in texts
+    assert "GF" in texts
+    assert "RESET" in texts
+    assert "If losers' finalist wins GF" in texts
+
+
+@pytest.mark.parametrize("player_count", [2, 3, 5, 8, 32])
+def test_preview_returns_to_setup_without_losing_inputs(
+    menu: MainMenu, entry: PlayerEntry, player_count: int
+) -> None:
+    names = [f"Player {index}" for index in range(player_count)]
+    for name in names:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.table_count_input.setValue(8)
+    entry.start_button.click()
+    QTest.mouseClick(menu.bracket_view.back_button, Qt.MouseButton.LeftButton)
+
+    expected_tables = 8
+    assert entry.isVisible()
+    assert entry.player_names() == names
+    assert entry.table_count() == expected_tables
+    assert entry.name_input.hasFocus()
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space])
+def test_preview_back_button_works_with_keyboard(
+    menu: MainMenu, entry: PlayerEntry, key: Qt.Key
+) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    back = menu.bracket_view.back_button
+    back.setFocus()
+    QTest.keyClick(back, key)
+
+    assert entry.isVisible()
+
+
+def test_large_double_preview_scrolls_and_match_boxes_do_not_overlap(
+    menu: MainMenu, entry: PlayerEntry, application: QApplication
+) -> None:
+    entry.back_button.click()
+    menu.double_button.click()
+    for index in range(_PLAYER_LIMIT):
+        entry.name_input.setText(f"Player {index}")
+        entry.add_button.click()
+    entry.start_button.click()
+    menu.resize(360, 440)
+    application.processEvents()
+    view = menu.bracket_view
+    rectangles = list(view.match_rects.values())
+
+    assert view.graphics.horizontalScrollBar().maximum() > 0
+    assert view.graphics.verticalScrollBar().maximum() > 0
+    assert view.rect().contains(view.back_button.geometry())
+    assert not view.graphics.geometry().intersects(view.back_button.geometry())
+    for index, rectangle in enumerate(rectangles):
+        assert all(not rectangle.intersects(other) for other in rectangles[index + 1 :])
+
+
+def test_preview_can_be_rebuilt_with_a_different_player_count(
+    menu: MainMenu, entry: PlayerEntry
+) -> None:
+    for name in ["Alice", "Bob", "Carol", "Dan"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    menu.bracket_view.back_button.click()
+    entry.remove_button.click()
+    entry.remove_button.click()
+    entry.start_button.click()
+
+    assert set(menu.bracket_view.match_rects) == {"W1"}
+
+
+def test_long_names_are_readable_through_tooltips(menu: MainMenu, entry: PlayerEntry) -> None:
+    long_name = "A very long player name " * 20
+    for name in [long_name, "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+    labels = [
+        item
+        for item in menu.bracket_view.scene.items()
+        if isinstance(item, QGraphicsTextItem) and item.toolTip() == long_name.strip()
+    ]
+
+    assert len(labels) == 1
+    assert labels[0].toPlainText() != long_name.strip()
+
+
+def test_window_closes_from_preview(menu: MainMenu, entry: PlayerEntry) -> None:
+    for name in ["Alice", "Bob"]:
+        entry.name_input.setText(name)
+        entry.add_button.click()
+    entry.start_button.click()
+
+    assert menu.close()
+    assert not menu.bracket_view.isVisible()
+
+
+def test_preview_rejects_invalid_table_count_without_replacing_draw(menu: MainMenu) -> None:
+    with pytest.raises(ValueError, match="At least one table"):
+        menu.bracket_view.show_draw(build_preview(["Alice", "Bob"], "Single Elimination"), 0)
+
+    assert menu.bracket_view.draw is None

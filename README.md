@@ -16,12 +16,19 @@ list has focus. Blank names are rejected, and the limit is 32 players.
 Repeated names are allowed.
 
 Start becomes available after adding at least two players and leaving no name
-waiting to be added. Clicking it confirms the chosen format, player count,
-and number of tables. The bracket screen will be connected in the next UI step.
+waiting to be added. Clicking it shuffles the players and opens a scrollable
+bracket preview. Double elimination shows winners' and losers' sides, a grand
+final, and a reset played only if the losers' finalist wins the first final.
+Later match slots show their source match numbers. Byes advance automatically
+in the preview. Long names can be read in full by hovering over them.
+
+Back to Setup preserves the original player list and table count. Starting
+again creates a new randomized preview. Result entry and table assignments
+will be added separately.
 
 Back to Menu preserves the table count, player list, and any unfinished name, including
 when choosing a different format. Names are held in memory for the current
-session; saving and bracket creation from this screen will be added separately.
+session; saving will be added separately.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
 

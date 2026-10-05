@@ -13,6 +13,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from bracket import shuffle_names
+from bracket_preview import build_preview
+from bracket_view import BracketView
 from player_entry import PlayerEntry
 
 
@@ -67,12 +70,19 @@ class MainMenu(QDialog):
         layout.addStretch()
         self.setTabOrder(self.single_button, self.double_button)
         self.setTabOrder(self.double_button, self.exit_button)
+        self._build_pages()
+
+    def _build_pages(self) -> None:
         self.player_entry = PlayerEntry()
         self.player_entry.back_requested.connect(self._show_menu)
+        self.player_entry.start_requested.connect(self._show_preview)
+        self.bracket_view = BracketView()
+        self.bracket_view.back_requested.connect(self._show_setup)
         self.pages = QStackedLayout(self)
         self.pages.setContentsMargins(0, 0, 0, 0)
         self.pages.addWidget(self.menu_page)
         self.pages.addWidget(self.player_entry)
+        self.pages.addWidget(self.bracket_view)
         self.setMinimumSize(self.minimumSize().expandedTo(self.pages.minimumSize()))
 
     @Slot()
@@ -96,6 +106,23 @@ class MainMenu(QDialog):
     def _show_menu(self) -> None:
         self.pages.setCurrentWidget(self.menu_page)
         self.single_button.setFocus()
+
+    @Slot(str, list, int)
+    def _show_preview(self, tournament_format: str, names: list[str], table_count: int) -> None:
+        draw = build_preview(shuffle_names(names), tournament_format)
+        self.bracket_view.show_draw(draw, table_count)
+        self._setup_size = self.size()
+        self.pages.setCurrentWidget(self.bracket_view)
+        self.resize(max(self.width(), 1000), max(self.height(), 700))
+        self.bracket_view.graphics.horizontalScrollBar().setValue(0)
+        self.bracket_view.graphics.verticalScrollBar().setValue(0)
+        self.bracket_view.back_button.setFocus()
+
+    @Slot()
+    def _show_setup(self) -> None:
+        self.pages.setCurrentWidget(self.player_entry)
+        self.resize(self._setup_size)
+        self.player_entry.name_input.setFocus()
 
 
 def main() -> int:
