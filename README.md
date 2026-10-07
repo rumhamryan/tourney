@@ -86,7 +86,9 @@ Select a registered player to edit their name or chip count, then click
 player, and no unfinished entry.
 
 For elimination formats, Start becomes available after adding at least two players and leaving no name
-waiting to be added. Clicking it shuffles the players, locks the draw, assigns
+waiting to be added. Clicking it first asks where to create the tournament's
+`.json` file; canceling leaves setup unchanged. After choosing the file, the app
+shuffles the players, locks the draw, assigns
 ready matches to tables, and opens a scrollable bracket. Double elimination
 shows winners' and losers' sides, a grand
 final, and a reset played only if the losers' finalist wins the first final.
@@ -100,11 +102,17 @@ title identifies the match and table; repeated names are distinguished as top
 and bottom players. Escape or the window's close button dismisses the dialog
 without recording a result. Recording a result advances players and immediately
 assigns ready matches to free tables. The champion appears when the final is
-complete. Results cannot currently be undone or corrected.
+complete. Each result is saved automatically before the display advances.
 
+Returning to the main menu asks for confirmation, with **No** selected by default.
+Winner selection, confirmation, replacement, and error dialogs use their natural
+proportions with dialog dimensions and text enlarged by 1.5×. File browsers keep
+their own sizing.
+Choosing No, pressing Escape, or closing the dialog keeps the current screen open.
 Back to Menu preserves the table count, player list, and any unfinished name, including
 when choosing a different format.
-Save the current tournament before starting another one; Start creates a new draw.
+Start creates a new draw and requires a tournament file, with confirmation before
+replacing an existing file.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
 
@@ -146,16 +154,31 @@ chosen window size. Large brackets scroll while keeping match text readable.
 
 ## Save and load a tournament
 
-Click **Save As…** on the tournament screen to write a readable UTF-8 `.json` file.
-Use **Load Tournament** on the main menu to restore it. Loading preserves the
-exact draw; it never reshuffles the players. Ctrl+Shift+S opens Save As on the
+Every new tournament requires a readable UTF-8 `.json` file. Results and undo
+operations automatically update it. The file path appears on the tournament screen.
+If saving or scheduling fails, the previous result, history, and file remain unchanged;
+resolve the error and try again.
+
+Click **Save As…** to copy the complete tournament and undo history to another file.
+After a successful save, that file becomes the active location for automatic saves.
+Use **Load Tournament** on the main menu to restore a tournament. Loading preserves the
+exact draw, table assignments, and undo history; it never reshuffles players or
+redraws chip rounds. Ctrl+Shift+S opens Save As on the
 tournament screen, and Ctrl+O opens Load from the main menu. macOS uses the platform's
 standard shortcuts.
-Loading also locks the draw, preserves existing assignments and results, and
-assigns ready matches to any free tables.
+
+Use **Undo Last Result** or Ctrl+Z to restore the state before the most recent
+winner selection. The confirmation shows the table's current bracket box and the
+previous box to restore (for example, from W2 back to W1). A free table is shown as
+"unassigned".
+Stop affected physical play before confirming; the app cannot detect whether play
+has begun. Undo restores table assignments, chip counts, byes, pairings, and champion
+status exactly. Select the correct winner once the match returns to active play.
+Repeat undo to reach an older mistake; intervening results must then be recorded again.
+Undo history persists when reopening the file. There is no redo or fixed history limit.
 
 Chip saves preserve starting and current chip counts, every round and result,
-byes, and active table assignments. Loading resumes the current round without
+byes, and active table assignments. Loading restores the current round without
 changing its pairings.
 
 The elimination snapshot includes the original setup order, randomized player
@@ -172,12 +195,21 @@ Matches in progress show their table number in bold green beside the match numbe
 Hover over the table number to read its custom name, if configured. Match notes
 wrap onto two lines; longer notes keep their full text in a tooltip.
 A started tournament returns to the main menu instead of editable setup to keep
-its draw locked. Saves are manual; automatic recovery saves are a later step.
+its draw locked. Result entry, undo, Save As, and navigation are disabled while
+a scheduling transaction is pending.
+
+Older JSON snapshots without undo history open for viewing only. Their draw,
+results, and tables are preserved, but result entry, undo, and Save As are disabled.
+Start a new tournament to use automatic saving and undo.
 
 Invalid or unsupported files are rejected before changing the current tournament.
 Saving flushes a temporary file beside the destination and replaces the old file
-atomically; a failed write leaves the previous save intact. The JSON schema is
-currently version 1; future bracket-rule changes will require an explicit migration.
+atomically; a failed write leaves the previous save intact. New files use a version-1
+`tourney-history` document envelope with the current version-1 tournament snapshot
+and an ordered stack of result records containing the match identifier, winner index,
+and full snapshot before the result. Undo removes the latest record; a replacement
+result starts a new continuation. All snapshots and result transitions are validated
+on loading. Future bracket-rule changes will require an explicit migration.
 
 Run the UI checks without opening a desktop window:
 

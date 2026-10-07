@@ -24,6 +24,7 @@ from ui_metrics import (
     BODY_POINT_SIZE,
     BUTTON_HEIGHT,
     LAYOUT_SPACING,
+    OPERATOR_DIALOG_SCALE,
     PAGE_MARGIN,
     PAGE_TITLE_POINT_SIZE,
 )
@@ -31,7 +32,6 @@ from ui_metrics import (
 _CARD_WIDTH = 384
 _CARD_HEIGHT = 164
 _LIGHT_BACKGROUND_THRESHOLD = 128
-_RESULT_DIALOG_SCALE = 1.5
 
 
 def _label(text: str, *, bold: bool = False) -> QLabel:
@@ -77,24 +77,26 @@ class _ResultDialog(QDialog):
         assert layout is not None
         original = self.sizeHint().expandedTo(self.minimumSize())
         self.setMinimumSize(
-            round(original.width() * _RESULT_DIALOG_SCALE),
-            round(original.height() * _RESULT_DIALOG_SCALE),
+            round(original.width() * OPERATOR_DIALOG_SCALE),
+            round(original.height() * OPERATOR_DIALOG_SCALE),
         )
         font = QFont(self.font())
-        font.setPointSizeF(font.pointSizeF() * _RESULT_DIALOG_SCALE)
+        font.setPointSizeF(font.pointSizeF() * OPERATOR_DIALOG_SCALE)
         self.setFont(font)
         margins = layout.contentsMargins()
         layout.setContentsMargins(
-            round(margins.left() * _RESULT_DIALOG_SCALE),
-            round(margins.top() * _RESULT_DIALOG_SCALE),
-            round(margins.right() * _RESULT_DIALOG_SCALE),
-            round(margins.bottom() * _RESULT_DIALOG_SCALE),
+            round(margins.left() * OPERATOR_DIALOG_SCALE),
+            round(margins.top() * OPERATOR_DIALOG_SCALE),
+            round(margins.right() * OPERATOR_DIALOG_SCALE),
+            round(margins.bottom() * OPERATOR_DIALOG_SCALE),
         )
-        layout.setSpacing(round(layout.spacing() * _RESULT_DIALOG_SCALE))
+        layout.setSpacing(round(layout.spacing() * OPERATOR_DIALOG_SCALE))
         for button in self.winner_buttons:
-            button.setMinimumHeight(round(button.minimumHeight() * _RESULT_DIALOG_SCALE))
+            button.setMinimumHeight(round(button.minimumHeight() * OPERATOR_DIALOG_SCALE))
             text = QFontMetrics(button.font()).elidedText(
-                button.toolTip(), Qt.TextElideMode.ElideRight, round(520 * _RESULT_DIALOG_SCALE)
+                button.toolTip(),
+                Qt.TextElideMode.ElideRight,
+                round(520 * OPERATOR_DIALOG_SCALE),
             )
             button.setText(text.replace("&", "&&"))
 
@@ -169,19 +171,27 @@ class ChipView(QWidget):
     back_requested = Signal()
     save_requested = Signal()
     result_requested = Signal(str, int)
+    undo_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
         self.tournament: ChipTournament | None = None
+        self.read_only = False
+        self.busy = False
         self.match_cards: dict[str, _MatchCard] = {}
         self._scale = 1.0
         self._columns = 1
         self.title_label = _label("Chip Tournament", bold=True)
         self.summary_label = _label("")
         self.status_label = _label("")
+        self.file_label = _label("")
+        self.file_label.setWordWrap(True)
         self.status_label.setWordWrap(True)
         self.back_button = QPushButton("&Back to Menu")
         self.save_button = QPushButton("&Save As…")
+        self.undo_button = QPushButton("&Undo Last Result")
+        self.undo_button.setEnabled(False)
+        self.undo_button.clicked.connect(self.undo_requested.emit)
         self.back_button.clicked.connect(self.back_requested.emit)
         self.save_button.clicked.connect(self.save_requested.emit)
         self._build_layout()
@@ -193,6 +203,7 @@ class ChipView(QWidget):
         self._layout.addWidget(self.summary_label)
         self._layout.addWidget(_label("Click an active matchup to select its winner."))
         self._layout.addWidget(self.status_label)
+        self._layout.addWidget(self.file_label)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)
         self.splitter.setChildrenCollapsible(False)
         self._build_leaderboard()
@@ -203,6 +214,7 @@ class ChipView(QWidget):
         self._layout.addWidget(self.splitter, 1)
         footer = QHBoxLayout()
         footer.addWidget(self.save_button)
+        footer.addWidget(self.undo_button)
         footer.addWidget(self.back_button)
         self._layout.addLayout(footer)
 
@@ -244,11 +256,14 @@ class ChipView(QWidget):
         self.splitter.addWidget(pane)
 
     def _connect_keyboard(self) -> None:
-        for button in [self.save_button, self.back_button]:
+        for button in [self.save_button, self.undo_button, self.back_button]:
             _keyboard_button(button)
         shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs), self)
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         shortcut.activated.connect(self.save_button.click)
+        undo = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self)
+        undo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        undo.activated.connect(self.undo_button.click)
 
     def _apply_scale(self, scale: float) -> None:
         self._scale = scale
@@ -263,7 +278,7 @@ class ChipView(QWidget):
         self._layout.setSpacing(round(LAYOUT_SPACING * scale))
         self.leaderboard_pane.setMinimumWidth(round(240 * scale))
         self.match_scroll.setMinimumWidth(round(400 * scale))
-        for button in [self.save_button, self.back_button]:
+        for button in [self.save_button, self.undo_button, self.back_button]:
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
         for card in self.match_cards.values():
             card.setMinimumWidth(round(_CARD_WIDTH * scale))
@@ -353,7 +368,7 @@ class ChipView(QWidget):
         return super().eventFilter(watched, event)
 
     def _open_result(self, identifier: str) -> None:
-        if self.tournament is None:
+        if self.tournament is None or self.read_only or self.busy:
             return
         match = next(
             (

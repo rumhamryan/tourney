@@ -1,6 +1,5 @@
 from collections.abc import Iterator
 from pathlib import Path
-from threading import Event
 from unittest.mock import patch
 
 import pytest
@@ -20,15 +19,14 @@ from PySide6.QtWidgets import (
 
 from bracket_preview import build_preview
 from bracket_view import _ResultDialog
-from chip_storage import load_tournament as load_chip_tournament
 from chip_storage import save_tournament as save_chip_tournament
 from chip_tournament import record_result as record_chip_result
 from chip_view import _ResultDialog as _ChipResultDialog
 from main_menu import MainMenu, main
 from player_entry import PlayerEntry
-from table_scheduler import SchedulingResult, schedule_tables
+from tournament_file import TournamentDocument, read_tournament_file
 from tournament_state import MatchProgress, TableLabel, TournamentState
-from tournament_storage import load_tournament, save_tournament
+from tournament_storage import save_tournament
 from ui_metrics import REFERENCE_WIDTH
 
 _PLAYER_LIMIT = 32
@@ -45,16 +43,31 @@ def application() -> Iterator[QApplication]:
 
 
 @pytest.fixture
-def menu(application: QApplication) -> Iterator[MainMenu]:
+def menu(application: QApplication, tmp_path: Path) -> Iterator[MainMenu]:
     window = MainMenu()
     window.show()
     window.activateWindow()
     application.processEvents()
-    yield window
+    paths = (tmp_path / f"tournament-{index}.json" for index in range(100))
+    with (
+        patch(
+            "main_menu.QFileDialog.getSaveFileName",
+            side_effect=lambda *args, **kwargs: (str(next(paths)), ""),
+        ),
+        patch("main_menu.MainMenu._confirm_action", return_value=QMessageBox.StandardButton.Yes),
+    ):
+        yield window
     window.close()
     _wait_workers(window)
     window.deleteLater()
     application.processEvents()
+
+
+def load_tournament(path: Path) -> TournamentState:
+    loaded = read_tournament_file(path)
+    state = loaded.state if isinstance(loaded, TournamentDocument) else loaded
+    assert isinstance(state, TournamentState)
+    return state
 
 
 @pytest.fixture
@@ -228,7 +241,7 @@ def test_chip_pending_matches_cannot_record_results(
         menu.chip_view._open_result("unknown")
     dialog.assert_not_called()
     assert menu.chip_tournament is original
-    with patch("main_menu.QMessageBox.warning") as warning:
+    with patch("main_menu.MainMenu._show_warning") as warning:
         menu._record_chip_result("R1M2", 2)
     warning.assert_called_once()
     assert menu.chip_tournament is original
@@ -336,7 +349,9 @@ def test_chip_save_and_load_resume_partial_round_without_redrawing(
     path = tmp_path / "chips.json"
     with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
         menu.chip_view.save_button.click()
-    assert load_chip_tournament(path) == original
+    loaded = read_tournament_file(path)
+    assert isinstance(loaded, TournamentDocument)
+    assert loaded.state == original
     menu.chip_view.back_button.click()
     with (
         patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")),
@@ -374,15 +389,16 @@ def test_chip_bad_load_and_failed_save_preserve_current_tournament(
     path.write_text("{}", encoding="utf-8")
     with (
         patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")),
-        patch("main_menu.QMessageBox.warning") as warning,
+        patch("main_menu.MainMenu._show_warning") as warning,
     ):
         menu._load_tournament()
     warning.assert_called_once()
     assert menu.chip_tournament is original
     with (
         patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")),
-        patch("main_menu.save_chip_tournament", side_effect=OSError("disk full")),
-        patch("main_menu.QMessageBox.warning") as warning,
+        patch("main_menu.save_document", side_effect=OSError("disk full")),
+        patch("main_menu.MainMenu._confirm_action", return_value=QMessageBox.StandardButton.Yes),
+        patch("main_menu.MainMenu._show_warning") as warning,
     ):
         menu._save_tournament()
     warning.assert_called_once()
@@ -399,6 +415,7 @@ def test_start_assigns_tables_and_recording_winner_refills_them(
     assert menu.tournament.progress == (MatchProgress("W1", "in_progress", table_number=1),)
     assert [button.text() for button in menu.bracket_view.findChildren(QPushButton)] == [
         "&Save As…",
+        "&Undo Last Result",
         "&Back to Menu",
     ]
 
@@ -546,7 +563,7 @@ def test_recording_result_preserves_bracket_scroll(menu: MainMenu, entry: Player
 def test_invalid_result_keeps_tournament_and_warns(menu: MainMenu, entry: PlayerEntry) -> None:
     _start_players(entry, ["Alice", "Bob"])
     original = menu.tournament
-    with patch("main_menu.QMessageBox.warning") as warning:
+    with patch("main_menu.MainMenu._show_warning") as warning:
         menu._record_result("W1", 10)
     warning.assert_called_once()
     assert menu.tournament is original
@@ -555,25 +572,17 @@ def test_invalid_result_keeps_tournament_and_warns(menu: MainMenu, entry: Player
 def test_stale_background_schedule_cannot_replace_new_tournament(
     menu: MainMenu, entry: PlayerEntry
 ) -> None:
-    release = Event()
-
-    def delayed_schedule(state: TournamentState) -> SchedulingResult:
-        assert release.wait(timeout=5)
-        return schedule_tables(state)
-
-    with patch("main_menu.schedule_tables", side_effect=delayed_schedule):
-        entry.set_format("Double Elimination")
-        _start_players(entry, ["Alice", "Bob"])
-        menu.bracket_view.back_button.click()
-        menu.single_button.click()
-        try:
-            # Single elimination runs synchronously, so restore its real scheduler.
-            with patch("main_menu.schedule_tables", side_effect=schedule_tables):
-                entry.start_button.click()
-            current = menu.tournament
-        finally:
-            release.set()
-            _wait_workers(menu)
+    entry.set_format("Double Elimination")
+    _start_players(entry, ["Alice", "Bob"])
+    _wait_scheduling(menu)
+    stale = menu.scheduling_result
+    generation = menu._schedule_generation
+    assert stale is not None
+    menu.bracket_view.back_button.click()
+    menu.single_button.click()
+    entry.start_button.click()
+    current = menu.tournament
+    menu._apply_schedule(stale, generation)
     assert menu.tournament is current
     assert current is not None and current.draw.tournament_format == "Single Elimination"
     assert not menu.bracket_view.scheduling
@@ -582,24 +591,18 @@ def test_stale_background_schedule_cannot_replace_new_tournament(
 def test_stale_bracket_schedule_cannot_replace_chip_tournament(
     menu: MainMenu, entry: PlayerEntry
 ) -> None:
-    release = Event()
-
-    def delayed_schedule(state: TournamentState) -> SchedulingResult:
-        assert release.wait(timeout=5)
-        return schedule_tables(state)
-
-    with patch("main_menu.schedule_tables", side_effect=delayed_schedule):
-        entry.set_format("Double Elimination")
-        _start_players(entry, ["Alice", "Bob"])
-        menu.bracket_view.back_button.click()
-        menu.chip_button.click()
-        try:
-            entry.restore_chip_setup(["Alice", "Bob"], [2, 3], 1)
-            entry.start_button.click()
-            current = menu.chip_tournament
-        finally:
-            release.set()
-            _wait_workers(menu)
+    entry.set_format("Double Elimination")
+    _start_players(entry, ["Alice", "Bob"])
+    _wait_scheduling(menu)
+    stale = menu.scheduling_result
+    generation = menu._schedule_generation
+    assert stale is not None
+    menu.bracket_view.back_button.click()
+    menu.chip_button.click()
+    entry.restore_chip_setup(["Alice", "Bob"], [2, 3], 1)
+    entry.start_button.click()
+    current = menu.chip_tournament
+    menu._apply_schedule(stale, generation)
     assert menu.chip_tournament is current and current is not None
     assert menu.tournament is None
     assert menu.pages.currentWidget() is menu.chip_view
@@ -629,7 +632,7 @@ def test_click_active_match_records_result_and_shows_champion(
     dialog.assert_not_called()
 
 
-def test_loading_resumes_free_tables_without_moving_active_match(
+def test_loading_legacy_preserves_free_tables_and_active_match(
     menu: MainMenu, tmp_path: Path
 ) -> None:
     draw = build_preview(["Alice", "Bob", "Carol", "Dana"], "Single Elimination")
@@ -643,10 +646,8 @@ def test_loading_resumes_free_tables_without_moving_active_match(
     _wait_scheduling(menu)
     assert menu.tournament is not None
     assert menu.tournament.draw == original.draw
-    assert menu.tournament.progress == (
-        original.progress[0],
-        MatchProgress("W2", "in_progress", table_number=1),
-    )
+    assert menu.tournament.progress == original.progress
+    assert menu.bracket_view.read_only
 
 
 def test_double_scheduling_is_asynchronous_and_close_cleans_worker(
@@ -689,7 +690,9 @@ def test_menu_opens_with_expected_controls(menu: MainMenu) -> None:
     assert menu.chip_button.text() == "&Chip Tournament"
     assert menu.load_button.text() == "&Load Tournament"
     assert menu.exit_button.text() == "E&xit"
-    assert menu.selection_label.text() == ""
+    assert all(
+        not label.text().startswith("Selected:") for label in menu.menu_page.findChildren(QLabel)
+    )
 
 
 @pytest.mark.parametrize(
@@ -709,7 +712,9 @@ def test_format_buttons_report_correct_selection(
     QTest.mouseClick(getattr(menu, button_name), Qt.MouseButton.LeftButton)
 
     assert selections == [expected]
-    assert menu.selection_label.text() == f"Selected: {expected}"
+    assert all(
+        not label.text().startswith("Selected:") for label in menu.menu_page.findChildren(QLabel)
+    )
     assert menu.isVisible()
     assert menu.player_entry.isVisible()
     assert menu.player_entry.format_label.text() == expected
@@ -721,7 +726,11 @@ def test_switching_formats_updates_selection(menu: MainMenu) -> None:
     menu.player_entry.back_button.click()
     menu.double_button.click()
 
-    assert menu.selection_label.text() == "Selected: Double Elimination"
+    assert menu.player_entry.format_label.text() == "Double Elimination"
+    menu.player_entry.back_button.click()
+    assert all(
+        not label.text().startswith("Selected:") for label in menu.menu_page.findChildren(QLabel)
+    )
 
 
 def test_keyboard_focus_cycles_through_buttons(menu: MainMenu) -> None:
@@ -758,7 +767,10 @@ def test_keyboard_activates_focused_format(
 
     QTest.keyClick(button, key)
 
-    assert menu.selection_label.text() == f"Selected: {expected}"
+    assert menu.player_entry.format_label.text() == expected
+    assert all(
+        not label.text().startswith("Selected:") for label in menu.menu_page.findChildren(QLabel)
+    )
     assert menu.player_entry.isVisible()
     assert menu.player_entry.feedback_label.text() == ""
 
@@ -1389,6 +1401,18 @@ def test_start_opens_preview_with_shuffled_players_and_table_count(
     assert entry.player_names() == names
 
 
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+def test_bracket_byes_omit_automatic_advance_note(menu: MainMenu, format_: str) -> None:
+    draw = build_preview(["Alice", "Bob", "Carol"], format_)
+    menu.bracket_view.show_draw(draw, 2)
+    assert any(any(source.empty for source in match.slots) for match in draw.matches)
+    texts = [
+        item for item in menu.bracket_view.scene.items() if isinstance(item, QGraphicsTextItem)
+    ]
+    assert all("Bye: automatic advance" not in item.toPlainText() for item in texts)
+    assert all("Bye: automatic advance" not in item.toolTip() for item in texts)
+
+
 def test_double_preview_shows_both_sides_and_conditional_reset(
     menu: MainMenu, entry: PlayerEntry
 ) -> None:
@@ -1398,6 +1422,7 @@ def test_double_preview_shows_both_sides_and_conditional_reset(
         entry.name_input.setText(f"Player {index}")
         entry.add_button.click()
     entry.start_button.click()
+    _wait_scheduling(menu)
     texts = [
         item.toPlainText()
         for item in menu.bracket_view.scene.items()
@@ -1454,6 +1479,7 @@ def test_large_double_preview_scrolls_and_match_boxes_do_not_overlap(
         entry.name_input.setText(f"Player {index}")
         entry.add_button.click()
     entry.start_button.click()
+    _wait_scheduling(menu)
     menu.resize(360, 440)
     application.processEvents()
     view = menu.bracket_view
@@ -1642,7 +1668,7 @@ def test_save_as_writes_exact_draw_and_setup_order(
     assert loaded.entry_names == tuple(names)
     expected_tables = 4
     assert loaded.table_count == expected_tables
-    assert "Saved" in menu.bracket_view.status_label.text()
+    assert str(path) in menu.bracket_view.file_label.text()
 
 
 def test_load_restores_saved_progress_without_shuffling(
@@ -1672,7 +1698,7 @@ def test_load_restores_saved_progress_without_shuffling(
     assert menu.menu_page.isVisible()
 
 
-def test_loaded_progress_can_be_saved_again_without_loss(
+def test_legacy_progress_cannot_be_saved_as_new_document(
     menu: MainMenu, tmp_path: Path, saved_state: TournamentState
 ) -> None:
     original = tmp_path / "original.json"
@@ -1682,10 +1708,12 @@ def test_loaded_progress_can_be_saved_again_without_loss(
         menu.load_button.click()
     with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(copy), "")):
         menu.bracket_view.save_button.click()
-    assert load_tournament(copy) == saved_state
+    assert not copy.exists()
+    assert not menu.bracket_view.save_button.isEnabled()
+    assert menu.tournament == saved_state
 
 
-def test_unstarted_loaded_draw_starts_without_reshuffling(menu: MainMenu, tmp_path: Path) -> None:
+def test_unstarted_legacy_draw_remains_viewing_only(menu: MainMenu, tmp_path: Path) -> None:
     draw = build_preview(["Alice", "Bob", "Carol"], "Single Elimination")
     state = TournamentState(draw, tuple(reversed(draw.names)), 5)
     path = tmp_path / "before play.json"
@@ -1696,8 +1724,9 @@ def test_unstarted_loaded_draw_starts_without_reshuffling(menu: MainMenu, tmp_pa
     assert menu.menu_page.isVisible()
     assert menu.tournament is not None
     assert menu.tournament.draw == draw
-    assert menu.tournament.draw_locked
-    assert menu.tournament.progress == (MatchProgress("W1", "in_progress", table_number=1),)
+    assert not menu.tournament.draw_locked
+    assert not menu.tournament.progress
+    assert menu.bracket_view.read_only
     assert menu.player_entry.player_names() == list(state.entry_names)
     assert menu.player_entry.format_label.text() == state.draw.tournament_format
     assert menu.single_button.hasFocus()
@@ -1728,7 +1757,7 @@ def test_invalid_load_does_not_change_current_tournament(
     path.write_text(contents, encoding="utf-8")
     with (
         patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")),
-        patch("main_menu.QMessageBox.warning") as warning,
+        patch("main_menu.MainMenu._show_warning") as warning,
     ):
         menu.load_button.click()
     warning.assert_called_once()
@@ -1740,8 +1769,8 @@ def test_invalid_load_does_not_change_current_tournament(
 def test_load_io_error_is_reported_without_leaving_menu(menu: MainMenu) -> None:
     with (
         patch("main_menu.QFileDialog.getOpenFileName", return_value=("missing.json", "")),
-        patch("main_menu.load_tournament", side_effect=OSError("permission denied")),
-        patch("main_menu.QMessageBox.warning") as warning,
+        patch("main_menu.read_tournament_file", side_effect=OSError("permission denied")),
+        patch("main_menu.MainMenu._show_warning") as warning,
     ):
         menu.load_button.click()
     warning.assert_called_once()
@@ -1759,14 +1788,14 @@ def test_save_cancel_and_write_failure_keep_draw(
     original = menu.tournament
     with (
         patch("main_menu.QFileDialog.getSaveFileName", return_value=("", "")),
-        patch("main_menu.save_tournament") as save,
+        patch("main_menu.save_document") as save,
     ):
         menu.bracket_view.save_button.click()
     save.assert_not_called()
     with (
         patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / "a"), "")),
-        patch("main_menu.save_tournament", side_effect=OSError("disk full")),
-        patch("main_menu.QMessageBox.warning") as warning,
+        patch("main_menu.save_document", side_effect=OSError("disk full")),
+        patch("main_menu.MainMenu._show_warning") as warning,
     ):
         menu.bracket_view.save_button.click()
     warning.assert_called_once()
@@ -1817,6 +1846,7 @@ def test_save_shortcut_works_on_bracket(menu: MainMenu, entry: PlayerEntry, tmp_
         entry.name_input.setText(name)
         entry.add_button.click()
     entry.start_button.click()
+    QApplication.processEvents()
     path = tmp_path / "shortcut.json"
     with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
         QTest.keySequence(
@@ -1839,7 +1869,7 @@ def test_adding_json_extension_confirms_overwrite(
         patch(
             "main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / "existing"), "")
         ),
-        patch("main_menu.QMessageBox.question", return_value=answer) as question,
+        patch("main_menu.MainMenu._confirm_action", return_value=answer) as question,
     ):
         menu.bracket_view.save_button.click()
     question.assert_called_once()
@@ -1896,7 +1926,7 @@ def test_restore_setup_validates_before_changing_inputs(
     assert entry.format_label.text() == "Single Elimination"
 
 
-def test_existing_json_file_uses_file_dialog_overwrite_confirmation(
+def test_existing_json_file_uses_explicit_overwrite_confirmation(
     menu: MainMenu, entry: PlayerEntry, tmp_path: Path
 ) -> None:
     for name in ["Alice", "Bob"]:
@@ -1907,10 +1937,12 @@ def test_existing_json_file_uses_file_dialog_overwrite_confirmation(
     path.write_text("previous save", encoding="utf-8")
     with (
         patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")),
-        patch("main_menu.QMessageBox.question") as question,
+        patch(
+            "main_menu.MainMenu._confirm_action", return_value=QMessageBox.StandardButton.Yes
+        ) as question,
     ):
         menu.bracket_view.save_button.click()
-    question.assert_not_called()
+    question.assert_called_once()
     assert load_tournament(path) == menu.tournament
 
 

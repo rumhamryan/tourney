@@ -42,6 +42,7 @@ from ui_metrics import (
     BODY_POINT_SIZE,
     BUTTON_HEIGHT,
     LAYOUT_SPACING,
+    OPERATOR_DIALOG_SCALE,
     PAGE_MARGIN,
     PAGE_TITLE_POINT_SIZE,
 )
@@ -52,7 +53,6 @@ _COLUMN_STEP = 460
 _ROW_STEP = 204
 _LINE_WIDTH = 2.0
 _LIGHT_BACKGROUND_THRESHOLD = 128
-_RESULT_DIALOG_SCALE = 1.5
 
 
 class _MatchCard(QGraphicsRectItem):
@@ -105,24 +105,26 @@ class _ResultDialog(QDialog):
         assert layout is not None
         original = self.sizeHint().expandedTo(self.minimumSize())
         self.setMinimumSize(
-            round(original.width() * _RESULT_DIALOG_SCALE),
-            round(original.height() * _RESULT_DIALOG_SCALE),
+            round(original.width() * OPERATOR_DIALOG_SCALE),
+            round(original.height() * OPERATOR_DIALOG_SCALE),
         )
         font = QFont(self.font())
-        font.setPointSizeF(font.pointSizeF() * _RESULT_DIALOG_SCALE)
+        font.setPointSizeF(font.pointSizeF() * OPERATOR_DIALOG_SCALE)
         self.setFont(font)
         margins = layout.contentsMargins()
         layout.setContentsMargins(
-            round(margins.left() * _RESULT_DIALOG_SCALE),
-            round(margins.top() * _RESULT_DIALOG_SCALE),
-            round(margins.right() * _RESULT_DIALOG_SCALE),
-            round(margins.bottom() * _RESULT_DIALOG_SCALE),
+            round(margins.left() * OPERATOR_DIALOG_SCALE),
+            round(margins.top() * OPERATOR_DIALOG_SCALE),
+            round(margins.right() * OPERATOR_DIALOG_SCALE),
+            round(margins.bottom() * OPERATOR_DIALOG_SCALE),
         )
-        layout.setSpacing(round(layout.spacing() * _RESULT_DIALOG_SCALE))
+        layout.setSpacing(round(layout.spacing() * OPERATOR_DIALOG_SCALE))
         for button in self.winner_buttons:
-            button.setMinimumHeight(round(button.minimumHeight() * _RESULT_DIALOG_SCALE))
+            button.setMinimumHeight(round(button.minimumHeight() * OPERATOR_DIALOG_SCALE))
             text = QFontMetrics(button.font()).elidedText(
-                button.toolTip(), Qt.TextElideMode.ElideRight, round(520 * _RESULT_DIALOG_SCALE)
+                button.toolTip(),
+                Qt.TextElideMode.ElideRight,
+                round(520 * OPERATOR_DIALOG_SCALE),
             )
             button.setText(text.replace("&", "&&"))
 
@@ -160,6 +162,7 @@ class BracketView(QWidget):
     back_requested = Signal()
     save_requested = Signal()
     result_requested = Signal(str, int)
+    undo_requested = Signal()
 
     def __init__(self) -> None:
         super().__init__()
@@ -168,12 +171,15 @@ class BracketView(QWidget):
         self.outcomes: dict[str, Outcome] = {}
         self.table_count = 1
         self.scheduling = False
+        self.read_only = False
         self.match_rects: dict[str, QRectF] = {}
         self._card_width = float(_CARD_WIDTH)
         self._card_height = float(_CARD_HEIGHT)
         self.summary_label = QLabel()
         self.summary_label.setWordWrap(True)
         self.status_label = QLabel()
+        self.file_label = QLabel()
+        self.file_label.setWordWrap(True)
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(32)
         self.scene = QGraphicsScene(self)
@@ -195,6 +201,10 @@ class BracketView(QWidget):
         self.save_button.setMinimumHeight(40)
         self.save_button.setAutoDefault(False)
         self.save_button.clicked.connect(self.save_requested.emit)
+        self.undo_button = QPushButton("&Undo Last Result")
+        self.undo_button.setAutoDefault(False)
+        self.undo_button.setEnabled(False)
+        self.undo_button.clicked.connect(self.undo_requested.emit)
 
     def _build_layout(self) -> None:
         self._page_layout = QVBoxLayout(self)
@@ -206,9 +216,11 @@ class BracketView(QWidget):
         layout.addWidget(self.summary_label)
         layout.addWidget(self.hint_label)
         layout.addWidget(self.status_label)
+        layout.addWidget(self.file_label)
         layout.addWidget(self.graphics, 1)
         actions = QHBoxLayout()
         actions.addWidget(self.save_button)
+        actions.addWidget(self.undo_button)
         actions.addWidget(self.back_button)
         layout.addLayout(actions)
         self._connect_keyboard()
@@ -222,16 +234,19 @@ class BracketView(QWidget):
         self._page_layout.setContentsMargins(margin, margin, margin, margin)
         self._page_layout.setSpacing(round(LAYOUT_SPACING * scale))
         self.status_label.setMinimumHeight(round(32 * scale))
-        for button in [self.save_button, self.back_button]:
+        for button in [self.save_button, self.undo_button, self.back_button]:
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
         self.graphics.setTransform(QTransform.fromScale(scale, scale))
 
     def _connect_keyboard(self) -> None:
-        for button in [self.save_button, self.back_button]:
+        for button in [self.save_button, self.undo_button, self.back_button]:
             self._button_shortcuts(button)
         shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs), self)
         shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         shortcut.activated.connect(self.save_button.click)
+        undo = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self)
+        undo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        undo.activated.connect(self.undo_button.click)
 
     def _button_shortcuts(self, button: QPushButton) -> None:
         for key in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
@@ -297,7 +312,7 @@ class BracketView(QWidget):
             self.status_label.setText("Scheduling matches…")
 
     def _open_results(self, match_id: str = "") -> None:
-        if self.scheduling or self.tournament is None:
+        if self.scheduling or self.read_only or self.tournament is None:
             return
         if not any(
             item.match_id == match_id and item.status == "in_progress"
@@ -480,8 +495,6 @@ class BracketView(QWidget):
             return "If losers' finalist wins GF"
         if all(source.empty for source in match.slots):
             return "Unused slot"
-        if any(source.empty for source in match.slots):
-            return "Bye: automatic advance"
         return ""
 
     def _draw_connectors(self, draw: Draw) -> None:
