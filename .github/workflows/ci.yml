@@ -12,6 +12,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # QtGui imports EGL/OpenGL even when UI tests use the offscreen plugin.
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1 libopengl0
+
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
