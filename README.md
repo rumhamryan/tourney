@@ -1,5 +1,63 @@
 # Tourney
 
+## Portable Windows application
+
+On Windows 11 x64, download `Tourney.exe` and double-click it to open the app.
+No installation, Python, uv, or internet connection is needed to run it. Move
+the executable wherever convenient; tournament saves remain separate `.json`
+files in the location you choose when saving.
+
+This build is unsigned, so Windows may show a download or launch warning.
+It does not create shortcuts or install anything. On each launch, the executable
+extracts its bundled libraries into a temporary directory, which can add startup
+time. Normal exit removes those temporary files.
+
+### Build or rebuild the executable
+
+Use a Windows x64 build machine with [uv](https://docs.astral.sh/uv/getting-started/installation/)
+available in PowerShell. From the repository directory, run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+```
+
+The script installs Python 3.12 if needed and synchronizes the application and
+PyInstaller build dependencies into `.venv` using the committed `uv.lock`.
+Network access is required to download dependencies that are not already cached.
+Dependencies and build outputs are excluded from Git; do not commit `.venv`.
+The build script also works from another directory when given its full path.
+
+The result is `dist/Tourney.exe`, containing Python, the required Qt plugins,
+and the OR-Tools solver libraries. Share that file alone. Intermediate files
+are written under `build/`. Run the same command again after changing the app;
+it replaces the previous executable. Testers replace their old executable with
+the new one and keep their tournament saves.
+
+Before distributing a build, check it on a Windows 11 x64 machine without Python
+or developer tools: open it from a folder outside the repo (including a path
+with spaces), start each tournament format, record results, and save and reload
+a tournament. Double elimination should successfully run its background solver.
+
+### Tagged builds in GitHub Actions
+
+Pushing any Git tag triggers CI for the tagged commit. After the quality checks
+and Windows/macOS tests pass, CI runs the same build script on a Windows runner
+and uploads `dist/Tourney.exe` as the `Tourney-windows-x64` artifact. Open the
+tag's run in the repository's **Actions** tab and download that artifact; extract
+the ZIP to get `Tourney.exe`. Ordinary branch pushes and pull requests run checks
+without producing an executable.
+
+For example, after committing the desired version:
+
+```sh
+git tag v0.1.11
+git push origin v0.1.11
+```
+
+The tagged commit must contain the packaging files and updated workflow.
+Artifacts are retained according to the repository's Actions retention settings.
+CI produces the unsigned portable application and does not create a GitHub Release.
+
 ## Run the main menu
 
 From the repository directory, run:
