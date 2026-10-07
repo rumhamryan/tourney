@@ -52,6 +52,7 @@ _COLUMN_STEP = 460
 _ROW_STEP = 204
 _LINE_WIDTH = 2.0
 _LIGHT_BACKGROUND_THRESHOLD = 128
+_RESULT_DIALOG_SCALE = 1.5
 
 
 class _MatchCard(QGraphicsRectItem):
@@ -97,6 +98,33 @@ class _ResultDialog(QDialog):
             self.winner_buttons.append(button)
             layout.addWidget(button)
         self.setTabOrder(self.winner_buttons[0], self.winner_buttons[1])
+        self._enlarge()
+
+    def _enlarge(self) -> None:
+        layout = self.layout()
+        assert layout is not None
+        original = self.sizeHint().expandedTo(self.minimumSize())
+        self.setMinimumSize(
+            round(original.width() * _RESULT_DIALOG_SCALE),
+            round(original.height() * _RESULT_DIALOG_SCALE),
+        )
+        font = QFont(self.font())
+        font.setPointSizeF(font.pointSizeF() * _RESULT_DIALOG_SCALE)
+        self.setFont(font)
+        margins = layout.contentsMargins()
+        layout.setContentsMargins(
+            round(margins.left() * _RESULT_DIALOG_SCALE),
+            round(margins.top() * _RESULT_DIALOG_SCALE),
+            round(margins.right() * _RESULT_DIALOG_SCALE),
+            round(margins.bottom() * _RESULT_DIALOG_SCALE),
+        )
+        layout.setSpacing(round(layout.spacing() * _RESULT_DIALOG_SCALE))
+        for button in self.winner_buttons:
+            button.setMinimumHeight(round(button.minimumHeight() * _RESULT_DIALOG_SCALE))
+            text = QFontMetrics(button.font()).elidedText(
+                button.toolTip(), Qt.TextElideMode.ElideRight, round(520 * _RESULT_DIALOG_SCALE)
+            )
+            button.setText(text.replace("&", "&&"))
 
     def _player_button(self, label: str, player: int) -> QPushButton:
         button = QPushButton()

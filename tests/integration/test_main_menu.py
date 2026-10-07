@@ -478,6 +478,56 @@ def test_winner_dialog_has_only_two_player_buttons(
     dialog.deleteLater()
 
 
+def _result_dialog(menu: MainMenu, tournament_format: str) -> _ResultDialog | _ChipResultDialog:
+    menu._select_format(tournament_format)
+    if tournament_format == "Chip Tournament":
+        _start_chip_players(menu.player_entry, [2, 2])
+        assert menu.chip_tournament is not None
+        state = menu.chip_tournament
+        return _ChipResultDialog(state, state.rounds[0].matches[0], menu)
+    _start_players(menu.player_entry, ["Alice", "Bob"])
+    _wait_scheduling(menu)
+    assert menu.tournament is not None
+    return _ResultDialog(menu.tournament, menu)
+
+
+@pytest.mark.parametrize("width, height", [(900, 700), (1920, 1080)])
+@pytest.mark.parametrize(
+    "tournament_format", ["Single Elimination", "Double Elimination", "Chip Tournament"]
+)
+def test_result_dialog_is_larger_and_player_text_fits(
+    menu: MainMenu,
+    application: QApplication,
+    *,
+    tournament_format: str,
+    width: int,
+    height: int,
+) -> None:
+    minimum_dialog_size = (720, 200)
+    minimum_button_height = 72
+    menu.resize(width, height)
+    application.processEvents()
+    reference = QDialog(menu)
+    expected_font_size = reference.font().pointSizeF() * 1.5
+    reference.deleteLater()
+    dialog = _result_dialog(menu, tournament_format)
+    try:
+        dialog.show()
+        application.processEvents()
+        assert dialog.width() >= minimum_dialog_size[0]
+        assert dialog.height() >= minimum_dialog_size[1]
+        for button in dialog.winner_buttons:
+            assert button.height() >= minimum_button_height
+            assert button.font().pointSizeF() == pytest.approx(expected_font_size)
+            assert button.fontMetrics().horizontalAdvance(button.text()) < button.width()
+            assert button.fontMetrics().height() < button.height()
+        prompt = dialog.findChildren(QLabel)[0]
+        assert prompt.font().pointSizeF() == pytest.approx(expected_font_size)
+    finally:
+        dialog.close()
+        dialog.deleteLater()
+
+
 def test_recording_result_preserves_bracket_scroll(menu: MainMenu, entry: PlayerEntry) -> None:
     _start_players(entry, [f"Player {index}" for index in range(_PLAYER_LIMIT)])
     graphics = menu.bracket_view.graphics
