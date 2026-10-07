@@ -72,7 +72,9 @@ a format opens tournament setup. Set Number of tables using the arrows or
 type a positive whole number; it defaults to one. Type a name and press Enter or click Add.
 Select a player and click Remove Selected, or press Delete while the player
 list has focus. Blank names are rejected, and the limit is 32 players.
-Repeated names are allowed.
+New names and renames must be unique within the roster. Surrounding whitespace
+is trimmed before comparing names; comparison is case-sensitive. Duplicate
+entries show an error and keep the entered values for correction.
 
 Chip Tournament adds a **Chip count** field directly below the player-name field.
 Enter a name and a positive whole-number count, then click **Add Player**.

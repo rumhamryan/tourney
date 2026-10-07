@@ -313,18 +313,18 @@ def test_chip_leaderboard_and_match_grid_fit_resized_window(
         assert view._columns > 1
 
 
-def test_chip_long_and_duplicate_names_keep_full_identity(
-    menu: MainMenu, chip_entry: PlayerEntry
-) -> None:
+def test_chip_long_names_keep_full_identity(menu: MainMenu, chip_entry: PlayerEntry) -> None:
     name = "Zoë & 李 <player> " * 30
-    for count in [2, 3]:
-        chip_entry.name_input.setText(name)
+    names = [name.strip(), name.strip() + " 2"]
+    for player_name, count in zip(names, [2, 3], strict=True):
+        chip_entry.name_input.setText(player_name)
         chip_entry.chip_count_input.setText(str(count))
         chip_entry.add_button.click()
-    chip_entry.start_button.click()
+    with patch("chip_tournament.shuffle"):
+        chip_entry.start_button.click()
     QApplication.processEvents()
     card = menu.chip_view.match_cards["R1M1"]
-    assert all(label.toolTip() == name.strip() for label in card.player_labels)
+    assert [label.toolTip() for label in card.player_labels] == names
     assert all(len(label.text()) < len(name) for label in card.player_labels)
     seen: list[str] = []
 
@@ -336,7 +336,7 @@ def test_chip_long_and_duplicate_names_keep_full_identity(
 
     QTimer.singleShot(0, choose)
     card.click()
-    assert seen == [f"Top player: {name.strip()}", f"Bottom player: {name.strip()}"]
+    assert seen == names
     assert menu.chip_view.match_scroll.horizontalScrollBar().maximum() == 0
 
 
@@ -611,7 +611,7 @@ def test_stale_bracket_schedule_cannot_replace_chip_tournament(
 def test_click_active_match_records_result_and_shows_champion(
     menu: MainMenu, entry: PlayerEntry
 ) -> None:
-    _start_players(entry, ["Same", "Same"])
+    _start_players(entry, ["Alice", "Bob"])
 
     def choose_winner() -> None:
         dialog = QApplication.activeModalWidget()
@@ -626,7 +626,7 @@ def test_click_active_match_records_result_and_shows_champion(
     _wait_scheduling(menu)
     assert menu.tournament is not None
     assert menu.tournament.progress[0].winner_index == 1
-    assert "Champion: Same" in view.status_label.text()
+    assert "Champion: Bob" in view.status_label.text()
     with patch("bracket_view._ResultDialog") as dialog:
         _click_match(menu)
     dialog.assert_not_called()
@@ -888,12 +888,13 @@ def test_chip_player_limit_cannot_be_bypassed_with_enter(chip_entry: PlayerEntry
     assert not chip_entry.add_button.isEnabled()
 
 
-def test_chip_setup_preserves_duplicate_names_with_distinct_counts(chip_entry: PlayerEntry) -> None:
-    for chips in ["2", "7", "4"]:
-        chip_entry.name_input.setText("Same 李")
+def test_chip_setup_preserves_distinct_names_and_counts(chip_entry: PlayerEntry) -> None:
+    names = ["Same 李", "Other 李", "Third 李"]
+    for name, chips in zip(names, ["2", "7", "4"], strict=True):
+        chip_entry.name_input.setText(name)
         chip_entry.chip_count_input.setText(chips)
         chip_entry.add_button.click()
-    assert chip_entry.player_names() == ["Same 李"] * 3
+    assert chip_entry.player_names() == names
     assert chip_entry.player_chip_counts() == [2, 7, 4]
     chip_entry.player_list.setCurrentRow(1)
     chip_entry.remove_button.click()
@@ -1025,13 +1026,73 @@ def test_blank_names_are_rejected(entry: PlayerEntry, name: str) -> None:
     assert entry.name_input.hasFocus()
 
 
-def test_repeated_and_unicode_names_are_preserved(entry: PlayerEntry) -> None:
-    names = ["Alice", "Alice", "José 李"]
+def test_case_sensitive_and_unicode_names_are_preserved(entry: PlayerEntry) -> None:
+    names = ["Alice", "alice", "José 李"]
     for name in names:
         entry.name_input.setText(name)
         entry.add_button.click()
 
     assert entry.player_names() == names
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination", "Chip Tournament"])
+@pytest.mark.parametrize("name", ["José 李", "  José 李  "])
+@pytest.mark.parametrize("action", ["click", "enter"])
+def test_duplicate_player_names_are_rejected(
+    menu: MainMenu, format_: str, name: str, action: str
+) -> None:
+    entry = menu.player_entry
+    if format_ == "Chip Tournament":
+        entry.restore_chip_setup(["José 李", "Bob"], [2, 3], 1)
+    else:
+        entry.restore_setup(format_, ["José 李", "Bob"], 1)
+    menu.pages.setCurrentWidget(entry)
+    original_counts = entry.player_chip_counts()
+    entry.name_input.setText(name)
+    entry.chip_count_input.setText("7")
+    if action == "click":
+        entry.add_button.click()
+    else:
+        field = entry.chip_count_input if format_ == "Chip Tournament" else entry.name_input
+        field.setFocus()
+        QTest.keyClick(field, Qt.Key.Key_Return)
+    assert entry.player_names() == ["José 李", "Bob"]
+    assert entry.player_chip_counts() == original_counts
+    assert entry.count_label.text() == "Players: 2 / 32"
+    assert entry.name_input.text() == name
+    assert entry.chip_count_input.text() == "7"
+    assert entry.feedback_label.text() == "A player with this name already exists."
+    assert entry.name_input.hasFocus()
+    assert not entry.start_button.isEnabled()
+    entry.name_input.setText("Carol")
+    entry.add_button.click()
+    assert entry.player_names() == ["José 李", "Bob", "Carol"]
+    assert entry.feedback_label.text() == ""
+    assert entry.start_button.isEnabled()
+
+
+@pytest.mark.parametrize("name", ["Alice", "  Alice  "])
+def test_chip_player_cannot_be_renamed_to_another_player(
+    chip_entry: PlayerEntry, name: str
+) -> None:
+    chip_entry.restore_chip_setup(["Alice", "Bob"], [2, 3], 1)
+    item = chip_entry.player_list.item(1)
+    assert item is not None
+    chip_entry.player_list.itemClicked.emit(item)
+    chip_entry.name_input.setText(name)
+    chip_entry.chip_count_input.setText("7")
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Alice", "Bob"]
+    assert chip_entry.player_chip_counts() == [2, 3]
+    assert chip_entry.feedback_label.text() == "A player with this name already exists."
+    assert chip_entry.name_input.text() == name
+    assert chip_entry.chip_count_input.text() == "7"
+    chip_entry.name_input.setText("Bob")
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Alice", "Bob"]
+    assert chip_entry.player_chip_counts() == [2, 7]
+    assert chip_entry.feedback_label.text() == ""
+    assert chip_entry.start_button.isEnabled()
 
 
 def test_player_names_returns_an_independent_copy(entry: PlayerEntry) -> None:
@@ -1070,7 +1131,7 @@ def test_remove_selected_preserves_other_players(entry: PlayerEntry) -> None:
 
 
 def test_delete_key_removes_only_selected_player(entry: PlayerEntry) -> None:
-    for name in ["Alice", "Alice", "Bob"]:
+    for name in ["Alice", "Carol", "Bob"]:
         entry.name_input.setText(name)
         entry.add_button.click()
     entry.player_list.setCurrentRow(1)
@@ -1314,14 +1375,14 @@ def test_enter_to_add_second_player_does_not_start(
 def test_start_snapshot_does_not_change_when_players_are_edited(
     menu: MainMenu, entry: PlayerEntry, start_requests: list[tuple[str, list[str], int]]
 ) -> None:
-    for name in ["Alice", "Alice"]:
+    for name in ["Alice", "Bob"]:
         entry.name_input.setText(name)
         entry.add_button.click()
     entry.start_button.click()
     menu.bracket_view.back_button.click()
     entry.remove_button.click()
 
-    assert start_requests == [("Single Elimination", ["Alice", "Alice"], 1)]
+    assert start_requests == [("Single Elimination", ["Alice", "Bob"], 1)]
     assert entry.player_names() == ["Alice"]
 
 

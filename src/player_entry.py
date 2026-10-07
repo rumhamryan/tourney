@@ -393,6 +393,13 @@ class PlayerEntry(QWidget):
         if self.player_list.count() >= _MAX_PLAYERS and self._editing_item is None:
             self._update_controls()
             return
+        for row in range(self.player_list.count()):
+            existing = self.player_list.item(row)
+            assert existing is not None
+            if existing is not self._editing_item and existing.text() == name:
+                self.feedback_label.setText("A player with this name already exists.")
+                self.name_input.setFocus()
+                return
         chip_mode = self.format_label.text() == "Chip Tournament"
         chips = self._entered_chips() if chip_mode else None
         if chip_mode and chips is None:
