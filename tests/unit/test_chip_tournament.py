@@ -63,13 +63,14 @@ def test_round_waits_for_all_matches_then_reshuffles_survivors() -> None:
 
 
 def test_odd_rounds_distribute_byes_fairly_without_chip_loss() -> None:
-    state = start_tournament(["A", "B", "C"], [20] * 3, 1)
+    starting_chips = 10
+    state = start_tournament(["A", "B", "C"], [starting_chips] * 3, 1)
     completed = 8
     for _ in range(completed):
         match = state.rounds[-1].matches[0]
         state = record_result(state, match.identifier, match.players[0])
     assert [player.byes for player in state.players] == [3] * 3
-    assert sum(player.chips for player in state.players) == 3 * 20 - completed
+    assert sum(player.chips for player in state.players) == 3 * starting_chips - completed
 
 
 @pytest.mark.parametrize("count", [2, 3, 5, 8, 32])
@@ -110,10 +111,21 @@ def test_completed_result_cannot_be_changed() -> None:
         record_result(state, "R1M1", 1)
 
 
-@pytest.mark.parametrize("counts, tables", [([0, 1], 1), ([True, 1], 1), ([1], 1), ([1, 1], 0)])
+@pytest.mark.parametrize(
+    "counts, tables", [([0, 1], 1), ([11, 1], 1), ([True, 1], 1), ([1], 1), ([1, 1], 0)]
+)
 def test_invalid_setup_is_rejected(counts: list[int], tables: int) -> None:
     with pytest.raises(ValueError):
         start_tournament(["A", "B"], counts, tables)
+
+
+def test_ten_chip_limit_is_accepted_and_cannot_be_exceeded_by_saved_state() -> None:
+    maximum = 10
+    state = start_tournament(["A", "B"], [maximum, 1], 1)
+    assert state.players[0].chips == maximum
+    invalid_player = replace(state.players[0], starting_chips=11, chips=11)
+    with pytest.raises(ValueError, match="10"):
+        validate_tournament(replace(state, players=(invalid_player, state.players[1])))
 
 
 def test_validation_rejects_chip_counts_that_disagree_with_results() -> None:

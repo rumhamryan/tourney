@@ -63,6 +63,16 @@ def test_inconsistent_result_and_unknown_fields_are_rejected() -> None:
         loads_tournament(json.dumps(payload))
 
 
+def test_ten_chips_round_trip_and_saves_above_limit_are_rejected() -> None:
+    state = start_tournament(["A", "B"], [10, 1], 1)
+    contents = dumps_tournament(state)
+    assert loads_tournament(contents) == state
+    payload = json.loads(contents)
+    payload["players"][0].update(starting_chips=11, chips=11)
+    with pytest.raises(ValueError, match="10"):
+        loads_tournament(json.dumps(payload))
+
+
 def test_file_io_uses_validated_json_and_atomic_writer() -> None:
     state = start_tournament(["A", "B"], [2, 2], 1)
     path = Path("chip.json")

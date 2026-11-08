@@ -76,8 +76,46 @@ New names and renames must be unique within the roster. Surrounding whitespace
 is trimmed before comparing names; comparison is case-sensitive. Duplicate
 entries show an error and keep the entered values for correction.
 
+Click **Import Players…** on any tournament setup page to replace the roster
+from a UTF-8 `.txt` or `.csv` file. Both extensions use comma-separated values,
+with one player per row: `name` or `name,chips`. An optional first row of `name`
+or `name,chips` is treated as a header (case-insensitive). For example:
+
+```csv
+name,chips
+Alice,6
+Bob,
+Charlie
+"Doe, Jane",3
+```
+
+Missing or blank chip values default to **4** for each imported player. Chip
+values must be whole numbers from 1 to **10**; no player may have more than 10 chips.
+Imported chip values are
+retained when switching tournament formats; elimination brackets use only names.
+Names are trimmed, blank lines are skipped, and names containing commas must be
+quoted. Files may include a UTF-8 byte-order mark. Import keeps the first 32 valid,
+unique players in file order; at least two are needed to start.
+
+Lines with blank names, invalid chip counts, or extra columns are skipped. Duplicate
+names are skipped after trimming whitespace, using case-sensitive comparison; the
+first valid occurrence keeps its chip count. A rejected row does not prevent a
+later valid occurrence of that name from being imported. Players beyond the
+32-player limit are also skipped. Missing chips default to 4, but invalid chip
+values cause that row to be skipped rather than changing its chip count.
+
+A successful import replaces all existing players and clears unfinished player
+input while preserving the format and table count. The imported/skipped counts
+appear below the player list. When rows are skipped, an **Import Results** dialog
+offers **Show Details** with each row number and rejection reason.
+
+Cancellation, unreadable files, invalid encoding, malformed CSV, and files with no
+usable players leave the entire roster and unfinished input unchanged. File errors
+appear below the player list. Files with no usable players also report all rejected
+rows, if any. Broken quoting rejects the file even if valid rows appear before it.
+
 Chip Tournament adds a **Chip count** field directly below the player-name field.
-Enter a name and a positive whole-number count, then click **Add Player**.
+Enter a name and a whole-number count from **1 to 10**, then click **Add Player**.
 Both fields clear after adding; no chip count is supplied automatically.
 Enter in the name field moves to the chip field; Enter there adds the player.
 The roster displays names and chip counts in aligned columns, and returning
@@ -117,6 +155,49 @@ Start creates a new draw and requires a tournament file, with confirmation befor
 replacing an existing file.
 Use Tab or Shift+Tab to move between controls and Enter or Space to activate
 the focused button. The window can be resized.
+
+## Manual player-import checks
+
+The following sample files are in the repository root. Open any tournament setup
+page and choose **Import Players…**. For preservation checks, first add two players
+and leave an unfinished name in the input field. The roster and unfinished input
+should remain unchanged after the failed import. The samples work in all three
+formats; Chip Tournament displays the imported chip values directly.
+
+| Sample file | Expected result |
+|---|---|
+| `import_case_duplicate_names.txt` | Import 14 players: `player_1`–`player_10` and `player_12`–`player_15`, each with 4 chips. Skip row 15, the second `player_1`. This mirrors `player_list.txt`. |
+| `import_case_blank_names.csv` | Import Alice (6) and Bob (4). Skip rows 3 and 4 for blank names. |
+| `import_case_invalid_chips.csv` | Import Alice (6), Bob (4), and Charlie (1). Skip rows 3–8: zero, negative, decimal, text, over-limit (11), and non-ASCII chip counts. |
+| `import_case_extra_columns.csv` | Import Alice (6) and Bob (4). Skip row 3 for extra columns. |
+| `import_case_over_32_players.csv` | Import Player01–Player32 with 4 chips each. Skip rows 34 and 35, Player33 and Player34. |
+| `import_case_malformed_csv.csv` | Preserve setup and report malformed CSV ending at row 5. Even Alice and Bob before the broken quote must not be imported. |
+| `import_case_invalid_encoding.txt` | Preserve setup and request UTF-8. This sample is deliberately saved in unsupported UTF-16. |
+| `import_case_unreadable_file.txt` | While locked as described below, preserve setup and show the file-access error. After unlocking, import Alice (6) and Bob (4). |
+| `import_case_empty_file.txt` | Preserve setup and report that at least one usable player is required. |
+| `import_case_header_only.csv` | Preserve setup and report that at least one usable player is required. |
+| `import_case_all_invalid_rows.csv` | Preserve setup. Report no usable players and three skipped rows: row 2 has no name, row 3 has invalid chips, and row 4 has extra columns. |
+
+To check the unreadable-file case on Windows, leave the app open and run this in
+a PowerShell terminal at the repository root. While the terminal waits for Enter,
+try importing `import_case_unreadable_file.txt` in the app. Return to the terminal
+and press Enter to release the lock, then retry the import; it should succeed.
+The lock does not change the file's contents or permissions.
+
+```powershell
+$importSamplePath = Join-Path (Get-Location) 'import_case_unreadable_file.txt'
+$importSampleLock = [System.IO.File]::Open(
+    $importSamplePath,
+    [System.IO.FileMode]::Open,
+    [System.IO.FileAccess]::Read,
+    [System.IO.FileShare]::None
+)
+try {
+    Read-Host 'Test the import in Tourney, then press Enter here to unlock the file'
+} finally {
+    $importSampleLock.Dispose()
+}
+```
 
 ## Chip tournament rounds
 
@@ -182,6 +263,7 @@ Undo history persists when reopening the file. There is no redo or fixed history
 Chip saves preserve starting and current chip counts, every round and result,
 byes, and active table assignments. Loading restores the current round without
 changing its pairings.
+Saved chip tournaments with starting or remaining chip counts above 10 are rejected.
 
 The elimination snapshot includes the original setup order, randomized player
 order, format, full winners'/losers' match graph, conditional reset, table count,

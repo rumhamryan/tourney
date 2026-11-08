@@ -1,0 +1,3 @@
+name,chips
+Alice,6
+Bob,4

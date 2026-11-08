@@ -891,8 +891,8 @@ wheels = [
 ]
 
 [[package]]
-name = "template-project"
-version = "0.1.20"
+name = "tourney"
+version = "0.1.21"
 source = { virtual = "." }
 dependencies = [
     { name = "ortools" },

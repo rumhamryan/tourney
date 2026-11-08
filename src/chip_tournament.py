@@ -4,6 +4,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from random import choice, shuffle
 
+MAX_CHIPS = 10
+
 _MIN_PLAYERS = 2
 _MAX_PLAYERS = 32
 _MAX_NUMBER = 2**31 - 1
@@ -59,10 +61,12 @@ def _validate_players(state: ChipTournament) -> None:
             or player.name != player.name.strip()
         ):
             raise ValueError("Players must have nonblank names.")
-        if not _number(player.starting_chips, _MAX_NUMBER, 1) or not _number(
+        if not _number(player.starting_chips, MAX_CHIPS, 1) or not _number(
             player.chips, player.starting_chips
         ):
-            raise ValueError("Players need valid starting and remaining chip counts.")
+            raise ValueError(
+                f"Players need 1–{MAX_CHIPS} starting chips and valid remaining chip counts."
+            )
         if not _number(player.byes, len(state.rounds)):
             raise ValueError("Invalid bye count.")
 

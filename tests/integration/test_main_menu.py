@@ -831,6 +831,303 @@ def test_player_entry_opens_empty_with_name_field_focused(entry: PlayerEntry) ->
     assert not entry.remove_button.isEnabled()
 
 
+def _import_players(entry: PlayerEntry, path: Path) -> None:
+    with (
+        patch("player_entry.QFileDialog.getOpenFileName", return_value=(str(path), "")),
+        patch.object(QMessageBox, "exec", return_value=0),
+    ):
+        entry.import_button.click()
+
+
+@pytest.mark.parametrize("suffix", [".txt", ".csv", ".CSV"])
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination", "Chip Tournament"])
+def test_import_players_replaces_roster_and_starts_tournament(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path, suffix: str, format_: str
+) -> None:
+    tables = 2
+    entry.restore_chip_setup(["Old player", "Another player"], [2, 3], tables)
+    entry.set_format(format_)
+    entry.name_input.setText("Unfinished player")
+    entry.chip_count_input.setText("9")
+    path = tmp_path / f"players{suffix}"
+    path.write_text("name,chips\nAlice,6\nBob,\nCharlie\n", encoding="utf-8")
+    assert entry.import_button.isVisible()
+    _import_players(entry, path)
+    assert entry.player_names() == ["Alice", "Bob", "Charlie"]
+    assert entry.player_chip_counts() == [6, 4, 4]
+    assert entry.table_count() == tables
+    assert entry.format_label.text() == format_
+    assert entry.name_input.text() == entry.chip_count_input.text() == ""
+    assert entry.start_button.isEnabled()
+    entry.start_button.click()
+    _wait_scheduling(menu)
+    if format_ == "Chip Tournament":
+        assert menu.chip_tournament is not None
+        assert [(p.name, p.starting_chips) for p in menu.chip_tournament.players] == [
+            ("Alice", 6),
+            ("Bob", 4),
+            ("Charlie", 4),
+        ]
+    else:
+        assert menu.tournament is not None
+        assert set(menu.tournament.draw.names) == {"Alice", "Bob", "Charlie"}
+
+
+@pytest.mark.parametrize(
+    "contents,names,counts",
+    [
+        ("Alice\nBob\n", ["Alice", "Bob"], [4, 4]),
+        ("name\nAlice\nBob\n", ["Alice", "Bob"], [4, 4]),
+        ('\ufeff\n name , chips \r\n "Doe, Jane", 7 \r\n\nZoë,\r\n', ["Doe, Jane", "Zoë"], [7, 4]),
+        ('"Alice ""Ace""",10\nalice,1\n', ['Alice "Ace"', "alice"], [10, 1]),
+    ],
+)
+def test_import_csv_formats_and_chip_values_survive_mode_switch(
+    entry: PlayerEntry, tmp_path: Path, contents: str, names: list[str], counts: list[int]
+) -> None:
+    path = tmp_path / "players.txt"
+    path.write_text(contents, encoding="utf-8")
+    _import_players(entry, path)
+    assert entry.player_names() == names
+    assert entry.player_chip_counts() == counts
+    entry.set_format("Chip Tournament")
+    assert entry.player_chip_counts() == counts
+    assert entry.start_button.isEnabled()
+
+
+@pytest.mark.parametrize(
+    "contents,error",
+    [
+        ("", "at least one"),
+        ("\nname,chips\n\n", "at least one"),
+        ('Alice,4\n"Bob,4\n', "Line 2"),
+        ('Alice,4\n"Bob"oops,4\n', "Line 2"),
+    ],
+)
+def test_invalid_import_preserves_roster_and_editing_state(
+    chip_entry: PlayerEntry, tmp_path: Path, contents: str, error: str
+) -> None:
+    tables = 2
+    chip_entry.restore_chip_setup(["Alice", "Bob"], [2, 3], tables)
+    item = chip_entry.player_list.item(0)
+    assert item is not None
+    chip_entry.player_list.itemClicked.emit(item)
+    chip_entry.name_input.setText("Edited Alice")
+    path = tmp_path / "players.csv"
+    path.write_text(contents, encoding="utf-8")
+    _import_players(chip_entry, path)
+    assert error in chip_entry.feedback_label.text()
+    assert chip_entry.player_names() == ["Alice", "Bob"]
+    assert chip_entry.player_chip_counts() == [2, 3]
+    assert chip_entry.name_input.text() == "Edited Alice"
+    assert chip_entry.chip_count_input.text() == "2"
+    assert chip_entry.table_count() == tables
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Edited Alice", "Bob"]
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination", "Chip Tournament"])
+@pytest.mark.parametrize(
+    "filename,names,counts,skipped",
+    [
+        (
+            "duplicate_names.txt",
+            [f"player_{i}" for i in [*range(1, 11), 12, 13, 14, 15]],
+            [4] * 14,
+            1,
+        ),
+        ("blank_names.csv", ["Alice", "Bob"], [6, 4], 2),
+        ("invalid_chips.csv", ["Alice", "Bob", "Charlie"], [6, 4, 1], 6),
+        ("extra_columns.csv", ["Alice", "Bob"], [6, 4], 1),
+        ("over_32_players.csv", [f"Player{i:02}" for i in range(1, 33)], [4] * 32, 2),
+    ],
+)
+def test_manual_import_examples_recover_valid_players(
+    entry: PlayerEntry,
+    format_: str,
+    filename: str,
+    names: list[str],
+    counts: list[int],
+    skipped: int,
+) -> None:
+    entry.restore_chip_setup(["Old Alice", "Old Bob"], [2, 3], 1)
+    entry.set_format(format_)
+    path = Path(__file__).resolve().parents[2] / f"import_case_{filename}"
+    _import_players(entry, path)
+    assert entry.player_names() == names
+    assert entry.player_chip_counts() == counts
+    assert entry.feedback_label.text().startswith(f"Imported {len(names)} players.")
+    assert f"Skipped {skipped} " in entry.feedback_label.text()
+    assert entry.start_button.isEnabled()
+
+
+@pytest.mark.parametrize(
+    "filename,error",
+    [
+        ("empty_file.txt", "at least one"),
+        ("header_only.csv", "at least one"),
+        ("all_invalid_rows.csv", "at least one"),
+        ("malformed_csv.csv", "Line 5"),
+        ("invalid_encoding.txt", "UTF-8"),
+    ],
+)
+def test_manual_import_examples_preserve_setup_on_fatal_failure(
+    chip_entry: PlayerEntry, filename: str, error: str
+) -> None:
+    chip_entry.restore_chip_setup(["Old Alice", "Old Bob"], [2, 3], 1)
+    chip_entry.name_input.setText("Pending")
+    path = Path(__file__).resolve().parents[2] / f"import_case_{filename}"
+    _import_players(chip_entry, path)
+    assert error in chip_entry.feedback_label.text()
+    assert chip_entry.player_names() == ["Old Alice", "Old Bob"]
+    assert chip_entry.player_chip_counts() == [2, 3]
+    assert chip_entry.name_input.text() == "Pending"
+
+
+def test_unreadable_import_preserves_setup(entry: PlayerEntry) -> None:
+    entry.restore_setup("Single Elimination", ["Old Alice", "Old Bob"], 1)
+    path = Path(__file__).resolve().parents[2] / "import_case_unreadable_file.txt"
+    with patch("player_entry.Path.open", side_effect=PermissionError("File is locked")):
+        _import_players(entry, path)
+    assert "File is locked" in entry.feedback_label.text()
+    assert entry.player_names() == ["Old Alice", "Old Bob"]
+    _import_players(entry, path)
+    assert entry.player_names() == ["Alice", "Bob"]
+    assert entry.player_chip_counts() == [6, 4]
+
+
+@pytest.mark.parametrize("chips", ["0", "-1", "11", "1.5", "abc", "2147483648", "٤", "9" * 5000])
+def test_import_skips_invalid_chips_and_accepts_later_valid_name(
+    entry: PlayerEntry, tmp_path: Path, chips: str
+) -> None:
+    path = tmp_path / "players.csv"
+    path.write_text(f"Alice,{chips}\nAlice,6\nBob,\n Alice ,9\n", encoding="utf-8")
+    _import_players(entry, path)
+    assert entry.player_names() == ["Alice", "Bob"]
+    assert entry.player_chip_counts() == [6, 4]
+    assert "Skipped 2 lines" in entry.feedback_label.text()
+
+
+def test_import_reports_all_rows_and_duplicates_after_capacity(
+    entry: PlayerEntry, tmp_path: Path
+) -> None:
+    path = tmp_path / "players.csv"
+    contents = "name,chips\n,4\nInvalid,0\nExtra,4,unexpected\n"
+    contents += "\n".join(f"Player{i},4" for i in range(32))
+    contents += "\nPlayer0,8\nOverflow,4\nOverflow,5\n"
+    path.write_text(contents, encoding="utf-8")
+    reports: list[tuple[str, str]] = []
+
+    def inspect_report(dialog: QMessageBox) -> int:
+        reports.append((dialog.text(), dialog.detailedText()))
+        assert dialog.textFormat() == Qt.TextFormat.PlainText
+        return 0
+
+    with (
+        patch("player_entry.QFileDialog.getOpenFileName", return_value=(str(path), "")),
+        patch("player_entry.QMessageBox.exec", new=inspect_report),
+    ):
+        entry.import_button.click()
+    assert len(entry.player_names()) == _PLAYER_LIMIT
+    assert entry.player_chip_counts() == [4] * _PLAYER_LIMIT
+    assert len(reports) == 1
+    summary, details = reports[0]
+    assert summary == "Imported 32 players. Skipped 6 lines."
+    assert entry.feedback_label.text() == summary
+    assert details.splitlines() == [
+        "Line 2: Player names cannot be blank.",
+        "Line 3: Chips must be a whole number between 1 and 10.",
+        "Line 4: Use name or name,chips, with no extra columns.",
+        "Line 37: Duplicate player name: Player0.",
+        "Line 38: 32-player limit reached; skipped Overflow.",
+        "Line 39: Duplicate player name: Overflow.",
+    ]
+
+
+def test_import_reports_all_unusable_rows_without_changing_edit(
+    chip_entry: PlayerEntry, tmp_path: Path
+) -> None:
+    chip_entry.restore_chip_setup(["Alice", "Bob"], [2, 3], 1)
+    item = chip_entry.player_list.item(0)
+    assert item is not None
+    chip_entry.player_list.itemClicked.emit(item)
+    chip_entry.name_input.setText("Edited Alice")
+    path = tmp_path / "players.csv"
+    path.write_text(",4\nInvalid,0\nExtra,4,unexpected\n", encoding="utf-8")
+    with patch.object(chip_entry, "_show_import_report") as report:
+        _import_players(chip_entry, path)
+    report.assert_called_once()
+    assert report.call_args.args[1] == [
+        "Line 1: Player names cannot be blank.",
+        "Line 2: Chips must be a whole number between 1 and 10.",
+        "Line 3: Use name or name,chips, with no extra columns.",
+    ]
+    assert "Skipped 3 lines" in chip_entry.feedback_label.text()
+    assert chip_entry.player_names() == ["Alice", "Bob"]
+    assert chip_entry.player_chip_counts() == [2, 3]
+    assert chip_entry.name_input.text() == "Edited Alice"
+    assert chip_entry.chip_count_input.text() == "2"
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Edited Alice", "Bob"]
+
+
+@pytest.mark.parametrize("kind", ["missing", "encoding", "extension", "cancel"])
+def test_import_file_errors_and_cancel_preserve_setup(
+    entry: PlayerEntry, tmp_path: Path, kind: str
+) -> None:
+    tables = 2
+    entry.restore_setup("Single Elimination", ["Alice", "Bob"], tables)
+    entry.name_input.setText("Pending")
+    path = tmp_path / ("players.json" if kind == "extension" else "players.csv")
+    if kind == "encoding":
+        path.write_bytes(b"\xff\xfeAlice")
+    elif kind == "extension":
+        path.write_text("Charlie\nDave\n", encoding="utf-8")
+    if kind == "cancel":
+        with patch("player_entry.QFileDialog.getOpenFileName", return_value=("", "")) as dialog:
+            entry.import_button.click()
+        assert ".txt" in dialog.call_args.args[3] and ".csv" in dialog.call_args.args[3]
+        assert entry.feedback_label.text() == ""
+    else:
+        _import_players(entry, path)
+        assert entry.feedback_label.text()
+    assert entry.player_names() == ["Alice", "Bob"]
+    assert entry.name_input.text() == "Pending"
+    assert entry.table_count() == tables
+
+
+def test_import_replaces_full_roster_and_clears_chip_edit(
+    chip_entry: PlayerEntry, tmp_path: Path
+) -> None:
+    chip_entry.restore_chip_setup([f"Player {i}" for i in range(32)], [3] * 32, 1)
+    item = chip_entry.player_list.item(0)
+    assert item is not None
+    chip_entry.player_list.itemClicked.emit(item)
+    path = tmp_path / "players.csv"
+    path.write_text("Alice\n", encoding="utf-8")
+    assert chip_entry.import_button.isEnabled()
+    _import_players(chip_entry, path)
+    assert chip_entry.player_names() == ["Alice"]
+    assert not chip_entry.start_button.isEnabled()
+    chip_entry.name_input.setText("Bob")
+    chip_entry.chip_count_input.setText("5")
+    chip_entry.add_button.click()
+    assert chip_entry.player_names() == ["Alice", "Bob"]
+    assert chip_entry.player_chip_counts() == [4, 5]
+
+
+@pytest.mark.parametrize("key", [Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space])
+def test_import_button_keyboard_activation(entry: PlayerEntry, tmp_path: Path, key: Qt.Key) -> None:
+    path = tmp_path / "players.csv"
+    path.write_text("\n".join(f"Player {i}" for i in range(32)), encoding="utf-8")
+    entry.import_button.setFocus()
+    with patch("player_entry.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+        QTest.keyClick(entry.import_button, key)
+    assert len(entry.player_names()) == _PLAYER_LIMIT
+    assert entry.start_button.isEnabled()
+    assert entry.import_button.isEnabled()
+
+
 def test_chip_setup_requires_explicit_counts(chip_entry: PlayerEntry) -> None:
     assert chip_entry.chip_count_input.isVisible()
     assert chip_entry.chip_count_input.text() == ""
@@ -840,7 +1137,7 @@ def test_chip_setup_requires_explicit_counts(chip_entry: PlayerEntry) -> None:
     assert not chip_entry.start_button.isEnabled()
 
 
-@pytest.mark.parametrize("chips", ["", "0", "-1", "1.5", "abc", "2147483648"])
+@pytest.mark.parametrize("chips", ["", "0", "-1", "11", "1.5", "abc", "2147483648"])
 def test_chip_setup_rejects_missing_or_invalid_counts(chip_entry: PlayerEntry, chips: str) -> None:
     chip_entry.name_input.setText("Alice")
     chip_entry.chip_count_input.setText(chips)
@@ -864,7 +1161,7 @@ def test_chip_setup_adds_name_and_count_and_clears_both_fields(chip_entry: Playe
 
 
 def test_chip_setup_requires_a_name_and_accepts_the_largest_count(chip_entry: PlayerEntry) -> None:
-    chips = 2**31 - 1
+    chips = 10
     chip_entry.chip_count_input.setText(str(chips))
     chip_entry.add_button.click()
     assert chip_entry.player_names() == []
@@ -872,6 +1169,20 @@ def test_chip_setup_requires_a_name_and_accepts_the_largest_count(chip_entry: Pl
     chip_entry.name_input.setText("Alice")
     chip_entry.add_button.click()
     assert chip_entry.player_chip_counts() == [chips]
+
+
+def test_chip_edit_and_restore_cannot_exceed_ten_chips(chip_entry: PlayerEntry) -> None:
+    chip_entry.restore_chip_setup(["Alice", "Bob"], [10, 4], 1)
+    item = chip_entry.player_list.item(0)
+    assert item is not None
+    chip_entry.player_list.itemClicked.emit(item)
+    chip_entry.chip_count_input.setText("11")
+    chip_entry.add_button.click()
+    assert chip_entry.player_chip_counts() == [10, 4]
+    assert "10" in chip_entry.feedback_label.text()
+    with pytest.raises(ValueError, match="10"):
+        chip_entry.restore_chip_setup(["Alice", "Bob"], [11, 4], 1)
+    assert chip_entry.player_chip_counts() == [10, 4]
 
 
 def test_chip_player_limit_cannot_be_bypassed_with_enter(chip_entry: PlayerEntry) -> None:
@@ -974,6 +1285,7 @@ def test_chip_setup_controls_fit_and_fields_are_stacked(
         chip_entry.name_input,
         chip_entry.chip_count_input,
         chip_entry.add_button,
+        chip_entry.import_button,
         chip_entry.player_list,
         chip_entry.remove_button,
         chip_entry.back_button,
@@ -1220,7 +1532,8 @@ def test_player_entry_tab_order(entry: PlayerEntry) -> None:
         (entry.player_list, entry.remove_button),
         (entry.remove_button, entry.back_button),
         (entry.back_button, entry.table_count_input),
-        (entry.table_count_input, entry.name_input),
+        (entry.table_count_input, entry.import_button),
+        (entry.import_button, entry.name_input),
     ]:
         assert current.hasFocus()
         QTest.keyClick(current, Qt.Key.Key_Tab)
@@ -1245,6 +1558,7 @@ def test_player_entry_controls_fit_when_resized(
         entry.table_count_input,
         entry.player_list,
         entry.add_button,
+        entry.import_button,
         entry.remove_button,
         entry.back_button,
         entry.start_button,

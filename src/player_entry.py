@@ -1,16 +1,31 @@
 """Collect players and format-specific settings before a tournament starts."""
 
+import csv
 from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from PySide6.QtCore import QModelIndex, QPersistentModelIndex, QSize, Qt, Signal, Slot
-from PySide6.QtGui import QFont, QIntValidator, QKeySequence, QPainter, QPalette, QShortcut
+from PySide6.QtGui import (
+    QFont,
+    QIntValidator,
+    QKeySequence,
+    QPainter,
+    QPalette,
+    QShortcut,
+    QShowEvent,
+)
 from PySide6.QtWidgets import (
+    QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPushButton,
+    QSpacerItem,
     QSpinBox,
     QStyle,
     QStyledItemDelegate,
@@ -19,10 +34,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from chip_tournament import MAX_CHIPS as _MAX_CHIPS
 from ui_metrics import (
     BUTTON_HEIGHT,
     INPUT_HEIGHT,
     LAYOUT_SPACING,
+    OPERATOR_DIALOG_SCALE,
     PAGE_MARGIN,
     PAGE_TITLE_POINT_SIZE,
     PLAYER_ROW_HEIGHT,
@@ -30,7 +47,93 @@ from ui_metrics import (
 
 _MAX_PLAYERS = 32
 _MIN_PLAYERS = 2
-_MAX_CHIPS = 2**31 - 1
+_DEFAULT_IMPORT_CHIPS = 4
+
+
+def _parse_import_row(row: list[str]) -> tuple[str, int]:
+    if len(row) not in {1, 2}:
+        raise ValueError("Use name or name,chips, with no extra columns.")
+    name = row[0].strip()
+    if not name:
+        raise ValueError("Player names cannot be blank.")
+    text = row[1].strip() if len(row) > 1 else ""
+    if not text:
+        return name, _DEFAULT_IMPORT_CHIPS
+    digits = text.lstrip("0") or "0"
+    if not text.isascii() or not text.isdecimal() or len(digits) > len(str(_MAX_CHIPS)):
+        raise ValueError(f"Chips must be a whole number between 1 and {_MAX_CHIPS}.")
+    chips = int(digits)
+    if not 1 <= chips <= _MAX_CHIPS:
+        raise ValueError(f"Chips must be a whole number between 1 and {_MAX_CHIPS}.")
+    return name, chips
+
+
+@dataclass
+class _PlayerImport:
+    """Accumulate usable players and a reason for every skipped record."""
+
+    players: list[tuple[str, int]] = field(default_factory=list)
+    issues: list[str] = field(default_factory=list)
+    _names: set[str] = field(default_factory=set)
+
+    def _add_row(self, row: list[str], line_number: int) -> None:
+        try:
+            name, chips = _parse_import_row(row)
+            if name in self._names:
+                raise ValueError(f"Duplicate player name: {name}.")
+            self._names.add(name)
+            if len(self.players) >= _MAX_PLAYERS:
+                raise ValueError(f"32-player limit reached; skipped {name}.")
+            self.players.append((name, chips))
+        except ValueError as error:
+            self.issues.append(f"Line {line_number}: {error}")
+
+
+def _read_import_players(path: str) -> _PlayerImport:
+    source = Path(path)
+    if source.suffix.lower() not in {".txt", ".csv"}:
+        raise ValueError("Choose a .txt or .csv file.")
+    result = _PlayerImport()
+    first_row = True
+    with source.open(encoding="utf-8-sig", newline="") as stream:
+        reader = csv.reader(stream, strict=True, skipinitialspace=True)
+        try:
+            for row in reader:
+                if not row or (len(row) == 1 and not row[0].strip()):
+                    continue
+                header = [value.strip().lower() for value in row]
+                if first_row and header in (["name"], ["name", "chips"]):
+                    first_row = False
+                    continue
+                first_row = False
+                result._add_row(row, reader.line_num)
+        except csv.Error as error:
+            raise ValueError(f"Line {reader.line_num}: {error}") from error
+        except UnicodeDecodeError as error:
+            raise ValueError(
+                "Use a UTF-8 TXT or CSV file; the file's encoding is unsupported."
+            ) from error
+    return result
+
+
+class _ImportResultsDialog(QMessageBox):
+    """Keep the import report 50% wider than Qt's natural message-box width."""
+
+    _widened = False
+
+    def showEvent(self, event: QShowEvent) -> None:
+        super().showEvent(event)
+        if self._widened:
+            return
+        self._widened = True
+        width = round(self.width() * 1.5)
+        layout = self.layout()
+        assert isinstance(layout, QGridLayout)
+        margins = layout.contentsMargins()
+        spacer = QSpacerItem(max(0, width - margins.left() - margins.right()), 0)
+        layout.addItem(spacer, layout.rowCount(), 0, 1, layout.columnCount())
+        layout.activate()
+        self.setMinimumWidth(width)
 
 
 class _ChipCountDelegate(QStyledItemDelegate):
@@ -98,6 +201,11 @@ class PlayerEntry(QWidget):
         self.player_list.setAccessibleName("Players")
         self.player_list.setMinimumHeight(100)
         self.add_button = QPushButton("&Add")
+        self.import_button = QPushButton("&Import Players…")
+        self.import_button.setToolTip(
+            "Replace the roster from a TXT or CSV file: name or name,chips. "
+            "Missing chips default to 4."
+        )
         self.remove_button = QPushButton("&Remove Selected")
         self.back_button = QPushButton("&Back to Menu")
         self.start_button = QPushButton("&Start")
@@ -112,7 +220,7 @@ class PlayerEntry(QWidget):
 
     def _build_chip_controls(self) -> None:
         self.chip_count_input = QLineEdit()
-        self.chip_count_input.setPlaceholderText("Enter starting chips")
+        self.chip_count_input.setPlaceholderText(f"Enter starting chips (1–{_MAX_CHIPS})")
         self.chip_count_input.setValidator(QIntValidator(1, _MAX_CHIPS, self.chip_count_input))
         self.chip_count_input.setInputMethodHints(Qt.InputMethodHint.ImhDigitsOnly)
         self.chip_label = QLabel("Chip &count:")
@@ -182,7 +290,13 @@ class PlayerEntry(QWidget):
         self.table_count_input.setMinimumWidth(round(200 * scale))
         self.add_button.setMinimumWidth(round(144 * scale))
         self.feedback_label.setMinimumHeight(round(32 * scale))
-        for button in [self.add_button, self.remove_button, self.back_button, self.start_button]:
+        for button in [
+            self.add_button,
+            self.import_button,
+            self.remove_button,
+            self.back_button,
+            self.start_button,
+        ]:
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
         self._row_height = round(PLAYER_ROW_HEIGHT * scale)
         self._size_player_rows()
@@ -200,12 +314,14 @@ class PlayerEntry(QWidget):
         row.addWidget(label)
         row.addWidget(self.table_count_input)
         row.addStretch()
+        row.addWidget(self.import_button)
         return row
 
     def _connect_controls(self) -> None:
         self.name_input.returnPressed.connect(self._name_entered)
         self.chip_count_input.returnPressed.connect(self._add_player)
         self.add_button.clicked.connect(self._add_player)
+        self.import_button.clicked.connect(self._import_players)
         self.remove_button.clicked.connect(self._remove_player)
         self.back_button.clicked.connect(self.back_requested.emit)
         self.start_button.clicked.connect(self._request_start)
@@ -218,7 +334,13 @@ class PlayerEntry(QWidget):
         delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.player_list)
         delete.setContext(Qt.ShortcutContext.WidgetShortcut)
         delete.activated.connect(self._remove_player)
-        for button in [self.add_button, self.remove_button, self.back_button, self.start_button]:
+        for button in [
+            self.add_button,
+            self.import_button,
+            self.remove_button,
+            self.back_button,
+            self.start_button,
+        ]:
             button.setMinimumHeight(40)
             button.setAutoDefault(False)
             for key in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
@@ -232,7 +354,60 @@ class PlayerEntry(QWidget):
         self.setTabOrder(self.remove_button, self.back_button)
         self.setTabOrder(self.back_button, self.start_button)
         self.setTabOrder(self.start_button, self.table_count_input)
-        self.setTabOrder(self.table_count_input, self.name_input)
+        self.setTabOrder(self.table_count_input, self.import_button)
+        self.setTabOrder(self.import_button, self.name_input)
+
+    @Slot()
+    def _import_players(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Players", "", "Player files (*.txt *.csv)"
+        )
+        if not path:
+            return
+        try:
+            result = _read_import_players(path)
+        except (OSError, ValueError) as error:
+            self.feedback_label.setText(f"Could not import players: {error}")
+            return
+        summary = "Could not import players: The file must contain at least one usable player."
+        if result.players:
+            self._replace_import_players(result.players)
+            count = len(result.players)
+            summary = f"Imported {count} player" + ("s." if count != 1 else ".")
+        if result.issues:
+            count = len(result.issues)
+            summary += f" Skipped {count} line" + ("s." if count != 1 else ".")
+        self.feedback_label.setText(summary)
+        if result.issues:
+            self._show_import_report(summary, result.issues)
+
+    def _replace_import_players(self, players: Sequence[tuple[str, int]]) -> None:
+        self._editing_item = None
+        self.player_list.clear()
+        for name, chips in players:
+            self._store_player(name, chips)
+        self.name_input.clear()
+        self.chip_count_input.clear()
+        self.set_format(self.format_label.text())
+        self._update_controls()
+        self.name_input.setFocus()
+
+    def _show_import_report(self, summary: str, issues: Sequence[str]) -> None:
+        dialog = _ImportResultsDialog(
+            QMessageBox.Icon.Information,
+            "Import Results",
+            summary,
+            QMessageBox.StandardButton.Ok,
+            self,
+        )
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setInformativeText("Open Show Details to see each skipped row and its reason.")
+        dialog.setDetailedText("\n".join(issues))
+        font = QFont(self.font())
+        font.setPointSizeF(font.pointSizeF() * OPERATOR_DIALOG_SCALE * 0.50)
+        dialog.setFont(font)
+        dialog.exec()
+        dialog.deleteLater()
 
     def set_format(self, tournament_format: str) -> None:
         """Display the chosen format while preserving the entered names."""
@@ -282,7 +457,9 @@ class PlayerEntry(QWidget):
         if len(names) != len(chip_counts) or any(
             type(count) is not int or not 1 <= count <= _MAX_CHIPS for count in chip_counts
         ):
-            raise ValueError("Every player needs a positive whole-number chip count.")
+            raise ValueError(
+                f"Every player needs a whole-number chip count from 1 to {_MAX_CHIPS}."
+            )
         self.restore_setup("Single Elimination", names, table_count)
         for row, chips in enumerate(chip_counts):
             item = self.player_list.item(row)
@@ -318,7 +495,7 @@ class PlayerEntry(QWidget):
         return self.table_count_input.value()
 
     def player_chip_counts(self) -> list[int | None]:
-        """Return counts in entry order; players entered in bracket modes have no count."""
+        """Return counts in entry order; manually added bracket players have no count."""
         counts: list[int | None] = []
         for row in range(self.player_list.count()):
             item = self.player_list.item(row)
@@ -403,7 +580,9 @@ class PlayerEntry(QWidget):
         chip_mode = self.format_label.text() == "Chip Tournament"
         chips = self._entered_chips() if chip_mode else None
         if chip_mode and chips is None:
-            self.feedback_label.setText("Enter a positive whole number for the chip count.")
+            self.feedback_label.setText(
+                f"Enter a positive whole number from 1 to {_MAX_CHIPS} for the chip count."
+            )
             self.chip_count_input.setFocus()
             return
         item = self._store_player(name, chips)
