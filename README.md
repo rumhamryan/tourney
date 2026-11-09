@@ -235,6 +235,19 @@ centered, with comfortable widths on a large screen. Smaller windows use a
 compact scale; the minimum window is 640×600. Switching pages preserves the
 chosen window size. Large brackets scroll while keeping match text readable.
 
+Single- and double-elimination bracket pages also have a **Zoom** slider beside
+the title. Choose **25%–200%** in 5% steps; **100%** matches the normal bracket size
+for the current window. Zoom scales the bracket's cards, text, and connectors
+while page controls and winner dialogs keep their normal size. Scrolling and
+clicking active matches work at every zoom level. Zooming keeps the current view
+center where the scroll boundaries allow it.
+
+Focus Zoom with Tab or Alt+Z. Arrow keys adjust it by 5%, Page Up/Down by 25%,
+and Home/End select 25%/200%. Zoom is retained through results, undo, Save As, and
+window resizing. Successfully starting or loading a tournament resets it to 100%;
+canceled or failed operations leave it unchanged. New bracket previews start at
+100%. Zoom is a display preference and is not saved in tournament files.
+
 ## Save and load a tournament
 
 Every new tournament requires a readable UTF-8 `.json` file. Results and undo

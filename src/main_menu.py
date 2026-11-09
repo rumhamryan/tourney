@@ -190,6 +190,7 @@ class MainMenu(QDialog):
         )
 
     def _init_scheduling(self) -> None:
+        self._pending_reset_zoom = False
         self.chip_tournament: ChipTournament | None = None
         self.scheduling_result: SchedulingResult | None = None
         self._schedule_generation = 0
@@ -335,6 +336,7 @@ class MainMenu(QDialog):
             TournamentState(draw, tuple(names), table_count, draw_locked=True)
         )
         self._pending_path = path
+        self._pending_reset_zoom = True
         self._schedule_tables()
 
     def _present_tournament(self, state: TournamentState) -> None:
@@ -419,13 +421,15 @@ class MainMenu(QDialog):
         if self._pending_document is None or self._pending_path is None:
             return
         graphics = self.bracket_view.graphics
+        reset_zoom = self._pending_reset_zoom
         position = (graphics.horizontalScrollBar().value(), graphics.verticalScrollBar().value())
         candidate = replace(self._pending_document, state=result.state)
         if self._commit_document(candidate, self._pending_path):
             self.scheduling_result = result
         self._finish_pending()
-        graphics.horizontalScrollBar().setValue(position[0])
-        graphics.verticalScrollBar().setValue(position[1])
+        if not reset_zoom:
+            graphics.horizontalScrollBar().setValue(position[0])
+            graphics.verticalScrollBar().setValue(position[1])
 
     @Slot(str, int)
     def _schedule_failed(self, message: str, generation: int) -> None:
@@ -513,6 +517,8 @@ class MainMenu(QDialog):
         self.document = candidate
         self.tournament_path = path
         self.bracket_view.set_scheduling(False)
+        if self._pending_reset_zoom:
+            self.bracket_view.reset_zoom()
         self._present_snapshot(candidate.state)
         self._update_file_controls()
         return True
@@ -528,6 +534,7 @@ class MainMenu(QDialog):
             self.bracket_view.status_label.setText(self._pending_status)
         self._pending_document = None
         self._pending_path = None
+        self._pending_reset_zoom = False
         self.bracket_view.set_scheduling(False)
         self._update_file_controls()
         if self.pages.currentWidget() is self.bracket_view:
@@ -666,6 +673,8 @@ class MainMenu(QDialog):
         state = loaded.state if isinstance(loaded, TournamentDocument) else loaded
         self.bracket_view.set_scheduling(False)
         self._restore_setup(state)
+        if isinstance(state, TournamentState):
+            self.bracket_view.reset_zoom()
         self._present_snapshot(state)
         self._update_file_controls()
 

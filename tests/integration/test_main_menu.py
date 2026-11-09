@@ -25,7 +25,7 @@ from chip_view import _ResultDialog as _ChipResultDialog
 from main_menu import MainMenu, main
 from player_entry import PlayerEntry
 from tournament_file import TournamentDocument, read_tournament_file
-from tournament_state import MatchProgress, TableLabel, TournamentState
+from tournament_state import MatchProgress, TableLabel, TournamentState, match_players
 from tournament_storage import save_tournament
 from ui_metrics import REFERENCE_WIDTH
 
@@ -1843,6 +1843,209 @@ def test_preview_back_button_works_with_keyboard(
     QTest.keyClick(back, key)
 
     assert menu.menu_page.isVisible()
+
+
+def _start_zoom_bracket(menu: MainMenu, entry: PlayerEntry, format_: str) -> None:
+    entry.set_format(format_)
+    _start_players(entry, [f"Player {index}" for index in range(8)])
+    _wait_scheduling(menu)
+
+
+def _record_zoom_result(menu: MainMenu) -> None:
+    assert menu.tournament is not None
+    active = next(item for item in menu.tournament.progress if item.status == "in_progress")
+    winner = match_players(menu.tournament, active.match_id)[0]
+    assert winner is not None
+    menu._record_result(active.match_id, winner)
+    _wait_scheduling(menu)
+
+
+def test_bracket_zoom_defaults_and_keyboard_controls(menu: MainMenu, entry: PlayerEntry) -> None:
+    _start_zoom_bracket(menu, entry, "Single Elimination")
+    view = menu.bracket_view
+    slider = view.zoom_slider
+    assert (slider.minimum(), slider.maximum(), slider.value(), slider.singleStep()) == (
+        25,
+        200,
+        100,
+        5,
+    )
+    assert view.zoom_percentage.text() == "100%"
+    assert slider.accessibleName() == "Bracket zoom"
+    view.back_button.setFocus()
+    QTest.keyClick(view.back_button, Qt.Key.Key_Tab)
+    assert slider.hasFocus()
+    for key, percentage in [
+        (Qt.Key.Key_Right, 105),
+        (Qt.Key.Key_PageUp, 130),
+        (Qt.Key.Key_Home, 25),
+        (Qt.Key.Key_End, 200),
+    ]:
+        QTest.keyClick(slider, key)
+        assert slider.value() == percentage
+        assert view.zoom_percentage.text() == f"{percentage}%"
+        assert view.graphics.transform().m11() == pytest.approx(menu._ui_scale * percentage / 100)
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+@pytest.mark.parametrize("percentage", [25, 100, 200])
+def test_zoomed_bracket_matches_remain_clickable(
+    menu: MainMenu, entry: PlayerEntry, format_: str, percentage: int
+) -> None:
+    _start_zoom_bracket(menu, entry, format_)
+    view = menu.bracket_view
+    title_size = view.title_label.font().pointSizeF()
+    view.zoom_slider.setValue(percentage)
+    assert view.title_label.font().pointSizeF() == title_size
+    assert menu.tournament is not None
+    active = next(item for item in menu.tournament.progress if item.status == "in_progress")
+
+    def choose_winner() -> None:
+        dialog = QApplication.activeModalWidget()
+        assert isinstance(dialog, _ResultDialog)
+        dialog.winner_buttons[0].click()
+
+    QTimer.singleShot(0, choose_winner)
+    _click_match(menu, active.match_id)
+    _wait_scheduling(menu)
+    assert menu.tournament is not None
+    completed = next(item for item in menu.tournament.progress if item.match_id == active.match_id)
+    assert completed.status == "completed"
+    assert view.zoom_slider.value() == percentage
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+def test_zoom_preserved_by_results_undo_save_as_and_resize(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path, format_: str
+) -> None:
+    _start_zoom_bracket(menu, entry, format_)
+    view = menu.bracket_view
+    percentage = 150
+    assert menu.tournament_path is not None
+    original_contents = menu.tournament_path.read_bytes()
+    original = menu.tournament
+    rectangles = dict(view.match_rects)
+    view.zoom_slider.setValue(percentage)
+    assert menu.tournament is original
+    assert menu.tournament_path.read_bytes() == original_contents
+    assert view.match_rects == rectangles
+    _record_zoom_result(menu)
+    assert view.zoom_slider.value() == percentage
+    view.undo_button.click()
+    assert view.zoom_slider.value() == percentage
+    with patch(
+        "main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / "copy.json"), "")
+    ):
+        view.save_button.click()
+    assert view.zoom_slider.value() == percentage
+    for width, height in [(640, 600), (1920, 1080)]:
+        menu.resize(width, height)
+        QApplication.processEvents()
+        assert view.zoom_slider.value() == percentage
+        assert view.graphics.transform().m11() == pytest.approx(menu._ui_scale * percentage / 100)
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+def test_new_tournament_and_load_reset_zoom(
+    menu: MainMenu, entry: PlayerEntry, format_: str
+) -> None:
+    _start_zoom_bracket(menu, entry, format_)
+    view = menu.bracket_view
+    assert menu.tournament_path is not None
+    path = menu.tournament_path
+    view.zoom_slider.setValue(175)
+    view.back_button.click()
+    menu._select_format(format_)
+    entry.start_button.click()
+    _wait_scheduling(menu)
+    assert view.zoom_percentage.text() == "100%"
+    view.zoom_slider.setValue(175)
+    view.back_button.click()
+    with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(path), "")):
+        menu.load_button.click()
+    assert view.zoom_percentage.text() == "100%"
+
+
+@pytest.mark.parametrize("failure", ["cancel", "save", "schedule"])
+def test_unsuccessful_start_preserves_zoom(
+    menu: MainMenu, entry: PlayerEntry, failure: str
+) -> None:
+    _start_zoom_bracket(menu, entry, "Double Elimination")
+    view = menu.bracket_view
+    percentage = 175
+    view.zoom_slider.setValue(percentage)
+    original = menu.tournament
+    assert original is not None
+    view.back_button.click()
+    menu.single_button.click()
+    with patch("main_menu.MainMenu._show_warning"):
+        if failure == "cancel":
+            with patch("main_menu.QFileDialog.getSaveFileName", return_value=("", "")):
+                entry.start_button.click()
+        elif failure == "save":
+            with patch("main_menu.save_document", side_effect=OSError("write failed")):
+                entry.start_button.click()
+        else:
+            with patch("main_menu.schedule_tables", side_effect=ValueError("solve failed")):
+                entry.start_button.click()
+    assert view.zoom_slider.value() == percentage
+    assert menu.tournament is original
+    # A failed start must not leave a pending zoom reset for the current tournament.
+    menu._present_tournament(original)
+    _record_zoom_result(menu)
+    assert view.zoom_slider.value() == percentage
+
+
+@pytest.mark.parametrize("selection", ["", "missing.json"])
+def test_unsuccessful_load_preserves_zoom(
+    menu: MainMenu, entry: PlayerEntry, selection: str
+) -> None:
+    _start_zoom_bracket(menu, entry, "Single Elimination")
+    percentage = 150
+    menu.bracket_view.zoom_slider.setValue(percentage)
+    menu.bracket_view.back_button.click()
+    with (
+        patch("main_menu.QFileDialog.getOpenFileName", return_value=(selection, "")),
+        patch("main_menu.MainMenu._show_warning"),
+    ):
+        menu.load_button.click()
+    assert menu.bracket_view.zoom_slider.value() == percentage
+
+
+def test_preview_zoom_and_view_center(menu: MainMenu) -> None:
+    view = menu.bracket_view
+    draw = build_preview([f"Player {i}" for i in range(32)], "Double Elimination")
+    view.show_draw(draw, 2)
+    menu.pages.setCurrentWidget(view)
+    QApplication.processEvents()
+    view.graphics.centerOn(view.scene.sceneRect().center())
+    before = view.graphics.mapToScene(view.graphics.viewport().rect().center())
+    view.zoom_slider.setValue(150)
+    after = view.graphics.mapToScene(view.graphics.viewport().rect().center())
+    tolerance = 2
+    assert abs(after.x() - before.x()) <= tolerance
+    assert abs(after.y() - before.y()) <= tolerance
+    assert view.graphics.horizontalScrollBar().maximum() > 0
+    assert view.graphics.verticalScrollBar().maximum() > 0
+    view.show_draw(draw, 2)
+    assert view.zoom_percentage.text() == "100%"
+
+
+@pytest.mark.parametrize("width,height", [(640, 600), (1920, 1080)])
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+def test_zoom_controls_fit_bracket_window(
+    menu: MainMenu, entry: PlayerEntry, width: int, height: int, format_: str
+) -> None:
+    _start_zoom_bracket(menu, entry, format_)
+    menu.resize(width, height)
+    QApplication.processEvents()
+    assert (menu.width(), menu.height()) == (width, height)
+    view = menu.bracket_view
+    for widget in [view.title_label, view.zoom_slider, view.zoom_percentage, view.graphics]:
+        assert widget.isVisible()
+        assert view.rect().contains(widget.geometry())
+    assert not view.title_label.geometry().intersects(view.zoom_slider.geometry())
+    assert not view.zoom_slider.geometry().intersects(view.zoom_percentage.geometry())
 
 
 def test_large_double_preview_scrolls_and_match_boxes_do_not_overlap(

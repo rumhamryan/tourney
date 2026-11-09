@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -53,6 +54,10 @@ _COLUMN_STEP = 460
 _ROW_STEP = 204
 _LINE_WIDTH = 2.0
 _LIGHT_BACKGROUND_THRESHOLD = 128
+_MIN_ZOOM = 25
+_MAX_ZOOM = 200
+_DEFAULT_ZOOM = 100
+_ZOOM_STEP = 5
 
 
 class _MatchCard(QGraphicsRectItem):
@@ -190,7 +195,32 @@ class BracketView(QWidget):
         self.graphics.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self.graphics.setMinimumSize(260, 200)
         self._build_actions()
+        self._build_zoom_controls()
         self._build_layout()
+
+    def _build_zoom_controls(self) -> None:
+        self._window_scale = 1.0
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(_MIN_ZOOM, _MAX_ZOOM)
+        self.zoom_slider.setSingleStep(_ZOOM_STEP)
+        self.zoom_slider.setPageStep(25)
+        self.zoom_slider.setValue(_DEFAULT_ZOOM)
+        self.zoom_slider.setAccessibleName("Bracket zoom")
+        self.zoom_label = QLabel("&Zoom:")
+        self.zoom_label.setBuddy(self.zoom_slider)
+        self.zoom_percentage = QLabel("100%")
+        self.zoom_percentage.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self.zoom_slider.valueChanged.connect(self._update_zoom)
+
+    def _title_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(self.title_label, 1)
+        row.addWidget(self.zoom_label)
+        row.addWidget(self.zoom_slider, 1)
+        row.addWidget(self.zoom_percentage)
+        return row
 
     def _build_actions(self) -> None:
         self.back_button = QPushButton("&Back to Setup")
@@ -210,9 +240,10 @@ class BracketView(QWidget):
         self._page_layout = QVBoxLayout(self)
         layout = self._page_layout
         self.title_label = QLabel("Bracket Preview")
+        self.title_label.setWordWrap(True)
         self.hint_label = QLabel("Scroll to see all rounds. Return to setup to edit the draw.")
         self.hint_label.setWordWrap(True)
-        layout.addWidget(self.title_label)
+        layout.addLayout(self._title_row())
         layout.addWidget(self.summary_label)
         layout.addWidget(self.hint_label)
         layout.addWidget(self.status_label)
@@ -236,7 +267,26 @@ class BracketView(QWidget):
         self.status_label.setMinimumHeight(round(32 * scale))
         for button in [self.save_button, self.undo_button, self.back_button]:
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
+        self.zoom_slider.setMinimumWidth(round(120 * scale))
+        self.zoom_slider.setMaximumWidth(round(240 * scale))
+        self.zoom_percentage.setMinimumWidth(QFontMetrics(self.font()).horizontalAdvance("200%"))
+        self._window_scale = scale
+        self._update_zoom(self.zoom_slider.value())
+
+    def _update_zoom(self, value: int) -> None:
+        percentage = round(value / _ZOOM_STEP) * _ZOOM_STEP
+        if percentage != value:
+            self.zoom_slider.setValue(percentage)
+            return
+        center = self.graphics.mapToScene(self.graphics.viewport().rect().center())
+        scale = self._window_scale * percentage / _DEFAULT_ZOOM
         self.graphics.setTransform(QTransform.fromScale(scale, scale))
+        self.graphics.centerOn(center)
+        self.zoom_percentage.setText(f"{percentage}%")
+
+    def reset_zoom(self) -> None:
+        """Restore the default bracket zoom without changing the tournament."""
+        self.zoom_slider.setValue(_DEFAULT_ZOOM)
 
     def _connect_keyboard(self) -> None:
         for button in [self.save_button, self.undo_button, self.back_button]:
@@ -247,6 +297,11 @@ class BracketView(QWidget):
         undo = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self)
         undo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         undo.activated.connect(self.undo_button.click)
+        self.setTabOrder(self.zoom_slider, self.graphics)
+        self.setTabOrder(self.graphics, self.save_button)
+        self.setTabOrder(self.save_button, self.undo_button)
+        self.setTabOrder(self.undo_button, self.back_button)
+        self.setTabOrder(self.back_button, self.zoom_slider)
 
     def _button_shortcuts(self, button: QPushButton) -> None:
         for key in [Qt.Key.Key_Return, Qt.Key.Key_Enter]:
@@ -258,6 +313,7 @@ class BracketView(QWidget):
         """Replace the preview while preserving its immutable setup snapshot."""
         if table_count < 1:
             raise ValueError("At least one table is required.")
+        self.reset_zoom()
         self.tournament = None
         self.outcomes = {}
         self._display_draw(draw, table_count)
