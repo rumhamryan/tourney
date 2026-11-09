@@ -2,6 +2,7 @@
 
 import sys
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal, Slot
@@ -318,7 +319,9 @@ class MainMenu(QDialog):
     def _show_preview(self, tournament_format: str, names: list[str], table_count: int) -> None:
         if self._pending_document is not None or self._saving:
             return
-        path = self._choose_tournament_path("Create Tournament File")
+        format_name = tournament_format.lower().replace(" ", "_")
+        default_name = f"{date.today():%Y%m%d}_{format_name}_{len(names)}_players.json"
+        path = self._choose_tournament_path("Create Tournament File", default_name)
         if path is None:
             return
         if tournament_format == "Chip Tournament":
@@ -486,11 +489,13 @@ class MainMenu(QDialog):
         self.pages.setCurrentWidget(self.player_entry)
         self.player_entry.name_input.setFocus()
 
-    def _choose_tournament_path(self, title: str) -> Path | None:
+    def _choose_tournament_path(
+        self, title: str, default_name: str = "tournament.json"
+    ) -> Path | None:
         selected, _ = QFileDialog.getSaveFileName(
             self,
             title,
-            str(self.tournament_path or "tournament.json"),
+            str(self.tournament_path or default_name),
             "Tournament JSON (*.json)",
             options=QFileDialog.Option.DontConfirmOverwrite,
         )

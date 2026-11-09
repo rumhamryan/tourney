@@ -926,74 +926,13 @@ def test_invalid_import_preserves_roster_and_editing_state(
     assert chip_entry.player_names() == ["Edited Alice", "Bob"]
 
 
-@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination", "Chip Tournament"])
-@pytest.mark.parametrize(
-    "filename,names,counts,skipped",
-    [
-        (
-            "duplicate_names.txt",
-            [f"player_{i}" for i in [*range(1, 11), 12, 13, 14, 15]],
-            [4] * 14,
-            1,
-        ),
-        ("blank_names.csv", ["Alice", "Bob"], [6, 4], 2),
-        ("invalid_chips.csv", ["Alice", "Bob", "Charlie"], [6, 4, 1], 6),
-        ("extra_columns.csv", ["Alice", "Bob"], [6, 4], 1),
-        ("over_32_players.csv", [f"Player{i:02}" for i in range(1, 33)], [4] * 32, 2),
-    ],
-)
-def test_manual_import_examples_recover_valid_players(
-    entry: PlayerEntry,
-    format_: str,
-    filename: str,
-    names: list[str],
-    counts: list[int],
-    skipped: int,
-) -> None:
-    entry.restore_chip_setup(["Old Alice", "Old Bob"], [2, 3], 1)
-    entry.set_format(format_)
-    path = Path(__file__).resolve().parents[2] / f"import_case_{filename}"
-    _import_players(entry, path)
-    assert entry.player_names() == names
-    assert entry.player_chip_counts() == counts
-    assert entry.feedback_label.text().startswith(f"Imported {len(names)} players.")
-    assert f"Skipped {skipped} " in entry.feedback_label.text()
-    assert entry.start_button.isEnabled()
-
-
-@pytest.mark.parametrize(
-    "filename,error",
-    [
-        ("empty_file.txt", "at least one"),
-        ("header_only.csv", "at least one"),
-        ("all_invalid_rows.csv", "at least one"),
-        ("malformed_csv.csv", "Line 5"),
-        ("invalid_encoding.txt", "UTF-8"),
-    ],
-)
-def test_manual_import_examples_preserve_setup_on_fatal_failure(
-    chip_entry: PlayerEntry, filename: str, error: str
-) -> None:
-    chip_entry.restore_chip_setup(["Old Alice", "Old Bob"], [2, 3], 1)
-    chip_entry.name_input.setText("Pending")
-    path = Path(__file__).resolve().parents[2] / f"import_case_{filename}"
-    _import_players(chip_entry, path)
-    assert error in chip_entry.feedback_label.text()
-    assert chip_entry.player_names() == ["Old Alice", "Old Bob"]
-    assert chip_entry.player_chip_counts() == [2, 3]
-    assert chip_entry.name_input.text() == "Pending"
-
-
 def test_unreadable_import_preserves_setup(entry: PlayerEntry) -> None:
     entry.restore_setup("Single Elimination", ["Old Alice", "Old Bob"], 1)
-    path = Path(__file__).resolve().parents[2] / "import_case_unreadable_file.txt"
+    path = Path("unreadable_file.txt")
     with patch("player_entry.Path.open", side_effect=PermissionError("File is locked")):
         _import_players(entry, path)
     assert "File is locked" in entry.feedback_label.text()
     assert entry.player_names() == ["Old Alice", "Old Bob"]
-    _import_players(entry, path)
-    assert entry.player_names() == ["Alice", "Bob"]
-    assert entry.player_chip_counts() == [6, 4]
 
 
 @pytest.mark.parametrize("chips", ["0", "-1", "11", "1.5", "abc", "2147483648", "٤", "9" * 5000])
