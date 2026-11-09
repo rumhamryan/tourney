@@ -48,7 +48,7 @@ jobs:
     needs: [quality, test-cross-platform]
     runs-on: windows-latest
     permissions:
-      contents: read
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -69,6 +69,21 @@ jobs:
           path: dist/Tourney.exe
           if-no-files-found: error
           compression-level: 0
+
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$env:GITHUB_REF_NAME" dist/Tourney.exe --repo "$env:GITHUB_REPOSITORY" --clobber
+          } else {
+            gh release create "$env:GITHUB_REF_NAME" dist/Tourney.exe --repo "$env:GITHUB_REPOSITORY" --verify-tag --generate-notes --title "Tourney $env:GITHUB_REF_NAME"
+          }
+          if ($LASTEXITCODE -ne 0) {
+            throw 'GitHub Release publication failed.'
+          }
 
   test-cross-platform:
     name: Pytest (${{ matrix.os }})

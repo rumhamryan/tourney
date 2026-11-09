@@ -457,11 +457,20 @@ def test_operator_dialogs_scale_their_natural_size_without_large_empty_boxes(
     assert window.pages.currentWidget() is window.bracket_view
 
 
-def test_error_messages_keep_native_wrapped_labels(window: MainMenu, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Disk full.",
+        "A file error with <literal text> and & symbols.\n" * 3,
+        "A longer file error with <literal text> and & symbols. " * 12,
+    ],
+)
+def test_error_messages_keep_native_labels_and_readable_text(
+    window: MainMenu, tmp_path: Path, text: str
+) -> None:
     start(window, tmp_path / "tournament.json")
-    text = "A file error with <literal text> and & symbols.\n" * 3
     messages = []
-    wrapped = []
+    readable = []
     text_editors = []
 
     def inspect_and_close() -> None:
@@ -469,13 +478,21 @@ def test_error_messages_keep_native_wrapped_labels(window: MainMenu, tmp_path: P
         assert isinstance(dialog, QMessageBox)
         label = dialog.findChild(QLabel, "qt_msgbox_label")
         assert label is not None
+        assert dialog.textFormat() == Qt.TextFormat.PlainText
         messages.append(label.text())
-        wrapped.append(label.wordWrap())
+        # Qt chooses wrapping based on the platform's fonts, style, and available width.
+        readable.append(
+            label.wordWrap()
+            or all(
+                label.fontMetrics().horizontalAdvance(line) <= label.contentsRect().width()
+                for line in text.splitlines()
+            )
+        )
         text_editors.append(bool(dialog.findChildren(QTextEdit)))
         dialog.button(QMessageBox.StandardButton.Ok).click()
 
     QTimer.singleShot(0, inspect_and_close)
     window._show_warning("Could Not Save Tournament", text)
     assert messages == [text]
-    assert wrapped == [True]
+    assert readable == [True]
     assert text_editors == [False]

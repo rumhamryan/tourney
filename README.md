@@ -42,21 +42,26 @@ a tournament. Double elimination should successfully run its background solver.
 
 Pushing any Git tag triggers CI for the tagged commit. After the quality checks
 and Windows/macOS tests pass, CI runs the same build script on a Windows runner
-and uploads `dist/Tourney.exe` as the `Tourney-windows-x64` artifact. Open the
-tag's run in the repository's **Actions** tab and download that artifact; extract
-the ZIP to get `Tourney.exe`. Ordinary branch pushes and pull requests run checks
-without producing an executable.
+and publishes a GitHub Release for the pushed tag with `Tourney.exe` attached.
+Download the executable directly from that release. CI also uploads
+`dist/Tourney.exe` as the `Tourney-windows-x64` artifact in the tag's **Actions**
+run; extract that artifact's ZIP to get the same executable. Ordinary branch
+pushes and pull requests run checks without producing an executable or release.
 
 For example, after committing the desired version:
 
 ```sh
-git tag v0.1.11
-git push origin v0.1.11
+git tag -a v0.1.24 -m "Tourney v0.1.24"
+git push origin v0.1.24
 ```
 
 The tagged commit must contain the packaging files and updated workflow.
 Artifacts are retained according to the repository's Actions retention settings.
-CI produces the unsigned portable application and does not create a GitHub Release.
+The tag must be pushed to GitHub; creating it locally does not trigger CI.
+The Windows build job uses `GITHUB_TOKEN` with `contents: write` to publish the
+release and generated notes; no additional secret is required. Rerunning a tag
+build replaces `Tourney.exe` on an existing release for that tag. The executable
+is unsigned.
 
 ## Run the main menu
 
