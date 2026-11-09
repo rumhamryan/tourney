@@ -1,6 +1,6 @@
 [project]
 name = "tourney"
-version = "0.1.28"
+version = "0.1.29"
 description = "Program to run brackets or a chipe tournament."
 readme = "README.md"
 requires-python = ">=3.12"
