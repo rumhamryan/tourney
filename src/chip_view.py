@@ -199,7 +199,6 @@ class ChipView(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.addWidget(self.title_label)
         self._layout.addWidget(self.summary_label)
-        self._layout.addWidget(_label("Click an active matchup to select its winner."))
         self._layout.addWidget(self.status_label)
         self._layout.addWidget(self.file_label)
         self.splitter = QSplitter(Qt.Orientation.Horizontal)

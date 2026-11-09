@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
+    QGraphicsPathItem,
     QGraphicsTextItem,
     QLabel,
     QMessageBox,
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from bracket_preview import build_preview
-from bracket_view import _ResultDialog
+from bracket_view import BracketView, _ResultDialog
 from chip_storage import save_tournament as save_chip_tournament
 from chip_tournament import record_result as record_chip_result
 from chip_view import _ResultDialog as _ChipResultDialog
@@ -1803,11 +1804,20 @@ def test_double_preview_shows_both_sides_and_conditional_reset(
         if isinstance(item, QGraphicsTextItem)
     ]
 
-    assert "Winners' bracket" in texts
-    assert "Losers' bracket" in texts
-    assert "GF" in texts
+    assert [label.toolTip() for label in menu.bracket_view.graphics.heading.round_labels] == [
+        "Round 1",
+        "Round 2",
+        "Round 3",
+        "Round 4",
+        "Final",
+    ]
+    assert any(identifier.startswith("L") for identifier in menu.bracket_view.match_rects)
+    assert "F1" in texts
+    assert "GF" not in texts
+    assert "Winner of F1" in texts
+    assert "Loser of F1" in texts
     assert "RESET" in texts
-    assert "If losers' finalist wins GF" in texts
+    assert "If losers' finalist wins F1" in texts
 
 
 @pytest.mark.parametrize("player_count", [2, 3, 5, 8, 32])
@@ -1857,6 +1867,204 @@ def _record_zoom_result(menu: MainMenu) -> None:
     assert winner is not None
     menu._record_result(active.match_id, winner)
     _wait_scheduling(menu)
+
+
+def _show_heading_preview(menu: MainMenu, format_: str) -> BracketView:
+    view = menu.bracket_view
+    view.show_draw(build_preview([f"Player {i}" for i in range(32)], format_), 2)
+    menu.pages.setCurrentWidget(view)
+    QApplication.processEvents()
+    return view
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+@pytest.mark.parametrize("count", [2, 32])
+def test_section_and_round_headings_only_render_in_pinned_header(
+    menu: MainMenu, format_: str, count: int
+) -> None:
+    view = menu.bracket_view
+    view.show_draw(build_preview([f"Player {i}" for i in range(count)], format_), 1)
+    menu.pages.setCurrentWidget(view)
+    QApplication.processEvents()
+    assert view.graphics.heading.isVisible()
+    assert not any(
+        "Winners'" in label.text() or "Losers'" in label.text()
+        for label in view.graphics.heading.findChildren(QLabel)
+    )
+    texts = [
+        item.toPlainText() for item in view.scene.items() if isinstance(item, QGraphicsTextItem)
+    ]
+    assert not {"Winners' bracket", "Losers' bracket", "Grand final", "Reset final"}.intersection(
+        texts
+    )
+    assert not any(text.startswith("Round ") for text in texts)
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+@pytest.mark.parametrize("percentage", [25, 100, 200])
+def test_bracket_headings_stay_readable_above_zoomed_matches(
+    menu: MainMenu, format_: str, percentage: int
+) -> None:
+    view = _show_heading_preview(menu, format_)
+    heading = view.graphics.heading
+    original_height = heading.round_labels[0].height()
+    original_font = heading.round_labels[0].font().pointSizeF()
+    view.zoom_slider.setValue(percentage)
+    view.graphics.centerOn(view.match_rects["W16"].center())
+    QApplication.processEvents()
+    assert heading.isVisible()
+    assert heading.round_labels[0].font().pointSizeF() == original_font
+    assert heading.round_labels[0].height() == original_height
+    assert view.graphics.rect().contains(heading.geometry())
+    assert not heading.geometry().intersects(view.graphics.viewport().geometry())
+    visible = [label for label in heading.round_labels if label.isVisible()]
+    assert visible
+    assert "Round 1" in [label.text() for label in visible]
+    assert all(heading.rect().contains(label.geometry()) for label in visible)
+    for index, label in enumerate(visible):
+        assert all(
+            not label.geometry().intersects(other.geometry()) for other in visible[index + 1 :]
+        )
+
+
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination"])
+@pytest.mark.parametrize("percentage", [25, 100, 200])
+def test_pinned_column_titles_ignore_vertical_scroll(
+    menu: MainMenu, format_: str, percentage: int
+) -> None:
+    view = _show_heading_preview(menu, format_)
+    view.zoom_slider.setValue(percentage)
+    QApplication.processEvents()
+    heading = view.graphics.heading
+    expected = [f"Round {i}" for i in range(1, 6)]
+    if format_ == "Double Elimination":
+        expected = [f"Round {i}" for i in range(1, 9)] + ["Final"]
+    original = [
+        (label.text(), label.geometry()) for label in heading.round_labels if label.isVisible()
+    ]
+    scrollbar = view.graphics.verticalScrollBar()
+    for position in [0, scrollbar.maximum() // 2, scrollbar.maximum(), 0]:
+        scrollbar.setValue(position)
+        QApplication.processEvents()
+        assert [label.toolTip() for label in heading.round_labels] == expected
+        assert [
+            (label.text(), label.geometry()) for label in heading.round_labels if label.isVisible()
+        ] == original
+
+
+@pytest.mark.parametrize("width,height", [(1280, 800), (1920, 1080), (1920, 1440)])
+@pytest.mark.parametrize("percentage", [25, 35])
+def test_zoomed_out_losers_keep_all_round_headers_when_scrolled_down(
+    menu: MainMenu, width: int, height: int, percentage: int
+) -> None:
+    view = _show_heading_preview(menu, "Double Elimination")
+    menu.resize(width, height)
+    view.zoom_slider.setValue(percentage)
+    QApplication.processEvents()
+    scrollbar = view.graphics.verticalScrollBar()
+    checked = False
+    for position in [scrollbar.maximum(), 0, scrollbar.maximum()]:
+        scrollbar.setValue(position)
+        QApplication.processEvents()
+        visible = view.graphics.mapToScene(view.graphics.viewport().rect()).boundingRect()
+        if visible.intersects(view.match_rects["L30"]):
+            checked = True
+            titles = [
+                label.text() for label in view.graphics.heading.round_labels if label.isVisible()
+            ]
+            assert {"Round 6", "Round 7", "Round 8"}.issubset(titles)
+    assert checked
+
+
+@pytest.mark.parametrize("percentage", [25, 35, 100, 200])
+def test_final_heading_stays_over_shared_final_column_at_every_zoom(
+    menu: MainMenu, percentage: int
+) -> None:
+    view = _show_heading_preview(menu, "Double Elimination")
+    view.zoom_slider.setValue(percentage)
+    for identifier in ["GF", "RESET"]:
+        view.graphics.centerOn(view.match_rects[identifier].center())
+        QApplication.processEvents()
+        titles = [
+            label for label in view.graphics.heading.round_labels if label.toolTip() == "Final"
+        ]
+        assert len(titles) == 1
+        title = titles[0]
+        assert title.isVisible()
+        assert title.text() == "Final"
+        assert title.alignment() & Qt.AlignmentFlag.AlignHCenter
+        assert view.graphics.heading.rect().contains(title.geometry())
+        expected = view.graphics.mapFromScene(
+            view.match_rects["GF"].united(view.match_rects["RESET"]).center()
+        ).x()
+        if title.width() < expected < view.graphics.heading.width() - title.width():
+            assert title.geometry().center().x() == pytest.approx(expected, abs=1)
+
+
+@pytest.mark.parametrize("count", [2, 8, 32])
+def test_double_finals_share_one_column_with_connectors_between_cards(
+    menu: MainMenu, count: int
+) -> None:
+    view = menu.bracket_view
+    view.show_draw(build_preview([f"Player {i}" for i in range(count)], "Double Elimination"), 2)
+    grand_final = view.match_rects["GF"]
+    reset_final = view.match_rects["RESET"]
+    assert grand_final.left() == reset_final.left()
+    assert grand_final.right() == reset_final.right()
+    assert grand_final.bottom() < reset_final.top()
+    paths = [
+        item.path()
+        for item in view.scene.items()
+        if isinstance(item, QGraphicsPathItem)
+        and item.path().pointAtPercent(0).x() == grand_final.center().x()
+        and item.path().pointAtPercent(0).y() == grand_final.bottom()
+    ]
+    expected_paths = 2
+    assert len(paths) == expected_paths
+    assert all(path.boundingRect().top() >= grand_final.bottom() for path in paths)
+    assert all(path.boundingRect().bottom() <= reset_final.top() for path in paths)
+
+
+def test_round_headings_slide_with_columns_during_zoom_and_scroll(menu: MainMenu) -> None:
+    view = _show_heading_preview(menu, "Double Elimination")
+    scene_bounds = view.scene.sceneRect()
+    positions = []
+    for percentage in [25, 50, 100, 200]:
+        view.zoom_slider.setValue(percentage)
+        view.graphics.centerOn(view.match_rects["W1"].center())
+        QApplication.processEvents()
+        label = next(
+            label for label in view.graphics.heading.round_labels if label.toolTip() == "Round 2"
+        )
+        assert label.isVisible()
+        column_x = view.graphics.mapFromScene(view.match_rects["W17"].center()).x()
+        assert label.alignment() & Qt.AlignmentFlag.AlignHCenter
+        assert label.geometry().center().x() == pytest.approx(column_x, abs=1)
+        positions.append(label.x())
+        assert view.scene.sceneRect() == scene_bounds
+    assert positions == sorted(set(positions))
+    before = label.x()
+    scrollbar = view.graphics.horizontalScrollBar()
+    original_scroll = scrollbar.value()
+    scrollbar.setValue(original_scroll + 100)
+    assert label.x() == before - (scrollbar.value() - original_scroll)
+
+
+@pytest.mark.parametrize("width,height", [(640, 600), (1920, 1080)])
+def test_pinned_headings_fit_after_resize_and_preview_rebuild(
+    menu: MainMenu, width: int, height: int
+) -> None:
+    view = _show_heading_preview(menu, "Double Elimination")
+    view.zoom_slider.setValue(200)
+    menu.resize(width, height)
+    QApplication.processEvents()
+    heading = view.graphics.heading
+    assert (menu.width(), menu.height()) == (width, height)
+    assert view.graphics.rect().contains(heading.geometry())
+    assert not heading.geometry().intersects(view.graphics.viewport().geometry())
+    view.show_draw(build_preview(["Alice", "Bob"], "Single Elimination"), 1)
+    QApplication.processEvents()
+    assert [label.text() for label in heading.round_labels] == ["Round 1"]
 
 
 def test_bracket_zoom_defaults_and_keyboard_controls(menu: MainMenu, entry: PlayerEntry) -> None:
@@ -2213,7 +2421,7 @@ def test_wrapped_match_notes_fit_inside_cards_with_full_tooltips(
     )
     for match_id, note in [
         ("W1", f"In progress · {label}"),
-        ("RESET", "If losers' finalist wins GF"),
+        ("RESET", "If losers' finalist wins F1"),
     ]:
         item = next(
             item
@@ -2490,7 +2698,7 @@ def test_loaded_double_final_uses_player_ids_for_reset_note(
         for item in menu.bracket_view.scene.items()
         if isinstance(item, QGraphicsTextItem)
     }
-    assert ("Not needed" if gf_winner == 0 else "If losers' finalist wins GF") in texts
+    assert ("Not needed" if gf_winner == 0 else "If losers' finalist wins F1") in texts
 
 
 @pytest.mark.parametrize(

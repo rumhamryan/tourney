@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from bracket import shuffle_names
 from bracket_preview import build_preview
-from bracket_view import BracketView
+from bracket_view import BracketView, _display_match_id
 from chip_tournament import ChipTournament
 from chip_tournament import record_result as record_chip_result
 from chip_tournament import start_tournament as start_chip_tournament
@@ -607,8 +607,8 @@ class MainMenu(QDialog):
             "unassigned",
         )
         return (
-            f"Do you want to return table {table} assignment from {current_box} "
-            f"back to {record.match_id}?"
+            f"Do you want to return table {table} assignment from {_display_match_id(current_box)} "
+            f"back to {_display_match_id(record.match_id)}?"
         )
 
     @staticmethod

@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPalette,
     QPen,
+    QResizeEvent,
     QShortcut,
     QTransform,
 )
@@ -61,6 +62,113 @@ _DEFAULT_ZOOM = 100
 _ZOOM_STEP = 5
 
 
+def _display_match_id(identifier: str) -> str:
+    return "F1" if identifier == "GF" else identifier
+
+
+class _BracketHeading(QWidget):
+    """Readable headings outside the scrolling, zoomable match viewport."""
+
+    def __init__(self, parent: QGraphicsView) -> None:
+        super().__init__(parent)
+        self.setAccessibleName("Bracket headings")
+        self.round_labels: list[QLabel] = []
+        self._columns: tuple[tuple[str, QRectF], ...] = ()
+        self.round_rows = 1
+
+    def show_columns(
+        self, columns: tuple[tuple[str, QRectF], ...], graphics: QGraphicsView
+    ) -> None:
+        if columns != self._columns:
+            for label in self.round_labels:
+                label.hide()
+                label.deleteLater()
+            self.round_labels.clear()
+            self._columns = columns
+            for text, _ in columns:
+                label = QLabel(text, self)
+                label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                label.setToolTip(text)
+                label.setAccessibleName(text)
+                self.round_labels.append(label)
+        for index, (label, (text, column)) in enumerate(
+            zip(self.round_labels, columns, strict=True)
+        ):
+            self._align_heading(
+                label,
+                (text, column),
+                graphics,
+                row=index % self.round_rows,
+                span=self.round_rows,
+            )
+
+    def _align_heading(
+        self,
+        label: QLabel,
+        heading: tuple[str, QRectF],
+        graphics: QGraphicsView,
+        *,
+        row: int,
+        span: int = 1,
+    ) -> None:
+        text, column = heading
+        center = column.center()
+        half_width = QPointF(column.width() * span / 2, 0)
+        left = max(0, graphics.mapFromScene(center - half_width).x())
+        right = min(self.width(), graphics.mapFromScene(center + half_width).x())
+        width = max(0, min(right - left - 8, label.fontMetrics().horizontalAdvance(text) + 8))
+        label.setVisible(
+            width > 0
+            and graphics.mapFromScene(column.topRight()).x() > 0
+            and graphics.mapFromScene(column.topLeft()).x() < self.width()
+        )
+        label.setGeometry(
+            max(left + 4, min(graphics.mapFromScene(center).x() - width // 2, right - width - 4)),
+            self.height() // self.round_rows * row,
+            width,
+            self.height() // self.round_rows,
+        )
+        label.setText(label.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, width))
+
+
+class _BracketGraphics(QGraphicsView):
+    def __init__(self, scene: QGraphicsScene) -> None:
+        super().__init__(scene)
+        self.columns: tuple[tuple[str, QRectF], ...] = ()
+        self.heading = _BracketHeading(self)
+        self.horizontalScrollBar().valueChanged.connect(self._refresh_headings)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "heading"):
+            self._refresh_headings()
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if hasattr(self, "heading") and event.type() == QEvent.Type.FontChange:
+            self._refresh_headings()
+
+    def _refresh_headings(self) -> None:
+        self.heading.round_rows = self._round_rows()
+        height = (
+            self.heading.round_rows * (self.fontMetrics().lineSpacing() + 6) if self.columns else 0
+        )
+        if self.viewportMargins().top() != height:
+            self.setViewportMargins(0, height, 0, 0)
+        viewport = self.viewport().geometry()
+        self.heading.setGeometry(viewport.left(), self.frameWidth(), viewport.width(), height)
+        self.heading.setVisible(bool(self.columns))
+        self.heading.show_columns(self.columns, self)
+
+    def _round_rows(self) -> int:
+        metrics = self.fontMetrics()
+        for text, column in self.columns:
+            width = column.width() * self.transform().m11()
+            if metrics.horizontalAdvance(text) + 8 > width:
+                return 2
+        return 1
+
+
 class _MatchCard(QGraphicsRectItem):
     def __init__(self, rectangle: QRectF, identifier: str, callback: Callable[[str], None]) -> None:
         super().__init__(rectangle)
@@ -87,7 +195,9 @@ class _ResultDialog(QDialog):
             raise ValueError("Choose a match in progress.")
         self._match_id = match.match_id
         self._winner: int | None = None
-        self.setWindowTitle(f"Record Result · {match.match_id} · Table {match.table_number}")
+        self.setWindowTitle(
+            f"Record Result · {_display_match_id(match.match_id)} · Table {match.table_number}"
+        )
         self.setMinimumWidth(480)
         self.winner_buttons: list[QPushButton] = []
         layout = QVBoxLayout(self)
@@ -190,7 +300,7 @@ class BracketView(QWidget):
         self.status_label.setMinimumHeight(32)
         self.scene = QGraphicsScene(self)
         self.scene.setBackgroundBrush(self.palette().brush(QPalette.ColorRole.Window))
-        self.graphics = QGraphicsView(self.scene)
+        self.graphics = _BracketGraphics(self.scene)
         self.graphics.setAccessibleName("Tournament bracket")
         self.graphics.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.graphics.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
@@ -283,6 +393,7 @@ class BracketView(QWidget):
         scale = self._window_scale * percentage / _DEFAULT_ZOOM
         self.graphics.setTransform(QTransform.fromScale(scale, scale))
         self.graphics.centerOn(center)
+        self.graphics._refresh_headings()
         self.zoom_percentage.setText(f"{percentage}%")
 
     def reset_zoom(self) -> None:
@@ -343,15 +454,17 @@ class BracketView(QWidget):
         self.scene.setBackgroundBrush(self.palette().brush(QPalette.ColorRole.Window))
         self.match_rects.clear()
         winners = [match for match in draw.matches if match.section == "Winners"]
-        bottom = self._place_section(winners, "Winners' bracket", 20)
+        bottom = self._place_section(winners, 20)
         if draw.tournament_format == "Double Elimination":
             losers = [match for match in draw.matches if match.section == "Losers"]
-            self._place_section(losers, "Losers' bracket", bottom + 40)
+            self._place_section(losers, bottom + 40)
             self._place_finals(draw)
         self._draw_connectors(draw)
+        self._set_column_headings(draw)
         self.scene.setSceneRect(self.scene.itemsBoundingRect().adjusted(-20, -20, 20, 20))
         self.graphics.horizontalScrollBar().setValue(0)
         self.graphics.verticalScrollBar().setValue(0)
+        self.graphics._refresh_headings()
         self.set_scheduling(self.scheduling)
         if self.tournament is not None:
             champion = champion_index(self.tournament)
@@ -389,8 +502,7 @@ class BracketView(QWidget):
             + 40,
         )
 
-    def _place_section(self, matches: list[PreviewMatch], title: str, top: float) -> float:
-        self._text(title, QPointF(20, top), bold=True)
+    def _place_section(self, matches: list[PreviewMatch], top: float) -> float:
         if not matches:
             self._text("Loser of W1 advances to the grand final.", QPointF(20, top + 44))
             return top + 120
@@ -402,11 +514,10 @@ class BracketView(QWidget):
         )
         for round_number, group in rounds.items():
             x = 20 + (round_number - 1) * (self._card_width + _COLUMN_STEP - _CARD_WIDTH)
-            self._text(f"Round {round_number}", QPointF(x, top + 44))
             for index, match in enumerate(group):
-                y = top + 96 + (index + 0.5) * height / len(group) - self._card_height / 2
+                y = top + (index + 0.5) * height / len(group) - self._card_height / 2
                 self._card(match, QRectF(x, y, self._card_width, self._card_height))
-        return top + 96 + height
+        return top + height
 
     def _place_finals(self, draw: Draw) -> None:
         columns = max(match.round_number for match in draw.matches if match.section != "Finals")
@@ -415,13 +526,24 @@ class BracketView(QWidget):
         upper = [rect.center().y() for key, rect in self.match_rects.items() if key.startswith("W")]
         lower = [rect.center().y() for key, rect in self.match_rects.items() if key.startswith("L")]
         y = (sum(upper) / len(upper) + (sum(lower) / len(lower) if lower else max(upper) + 160)) / 2
-        self._text("Grand final", QPointF(x, y - self._card_height / 2 - 44), bold=True)
         for match in draw.matches:
             if match.section == "Finals":
                 self._card(
                     match, QRectF(x, y - self._card_height / 2, self._card_width, self._card_height)
                 )
-                x += column_step
+                y += self._card_height + _ROW_STEP - _CARD_HEIGHT
+
+    def _set_column_headings(self, draw: Draw) -> None:
+        """Build the complete header once per draw, independently of the viewport."""
+        columns: dict[float, tuple[str, QRectF]] = {}
+        for match in draw.matches:
+            rectangle = self.match_rects[match.identifier]
+            label = "Final" if match.section == "Finals" else f"Round {match.round_number}"
+            column = QRectF(rectangle)
+            column.setWidth(self._card_width + _COLUMN_STEP - _CARD_WIDTH)
+            column.moveCenter(rectangle.center())
+            columns.setdefault(column.center().x(), (label, column))
+        self.graphics.columns = tuple(columns[key] for key in sorted(columns))
 
     def _text(
         self,
@@ -449,7 +571,7 @@ class BracketView(QWidget):
                 player_index = self.outcomes[source.match_id][int(source.loser)]
                 return self.draw.names[player_index] if player_index is not None else "Bye"
             outcome = "Loser" if source.loser else "Winner"
-            return f"{outcome} of {source.match_id}"
+            return f"{outcome} of {_display_match_id(source.match_id)}"
         return "Bye"
 
     def _card(self, match: PreviewMatch, rectangle: QRectF) -> None:
@@ -469,7 +591,7 @@ class BracketView(QWidget):
         card.setBrush(self.palette().brush(QPalette.ColorRole.Base))
         self.scene.addItem(card)
         origin = rectangle.topLeft()
-        self._card_text(match.identifier, origin + QPointF(12, 8), bold=True)
+        self._card_text(_display_match_id(match.identifier), origin + QPointF(12, 8), bold=True)
         self._table_badge(match, rectangle)
         for source, offset in zip(match.slots, [44, 80], strict=True):
             self._card_text(self._slot_label(source), origin + QPointF(12, offset))
@@ -545,7 +667,7 @@ class BracketView(QWidget):
                 )
                 if self.outcomes["GF"][0] == upper_player:
                     return "Not needed"
-            return "If losers' finalist wins GF"
+            return "If losers' finalist wins F1"
         if all(source.empty for source in match.slots):
             return "Unused slot"
         return ""
@@ -566,15 +688,29 @@ class BracketView(QWidget):
                     )
 
     def _connector(self, source: QRectF, target: QRectF, slot: int, *, loser: bool) -> None:
-        start = QPointF(source.right(), source.center().y())
-        end = QPointF(target.left(), target.top() + 60 + slot * 36)
-        middle_x = end.x() - 30
-        path = QPainterPath(start)
-        path.lineTo(middle_x, start.y())
-        path.lineTo(middle_x, end.y())
-        path.lineTo(end)
+        if source.center().x() == target.center().x():
+            path = self._vertical_path(source, target, slot)
+        else:
+            start = QPointF(source.right(), source.center().y())
+            end = QPointF(target.left(), target.top() + 60 + slot * 36)
+            middle_x = end.x() - 30
+            path = QPainterPath(start)
+            path.lineTo(middle_x, start.y())
+            path.lineTo(middle_x, end.y())
+            path.lineTo(end)
         pen = QPen(Qt.GlobalColor.white)
         pen.setWidthF(_LINE_WIDTH)
         if loser:
             pen.setStyle(Qt.PenStyle.DashLine)
         self.scene.addPath(path, pen).setZValue(-1)
+
+    @staticmethod
+    def _vertical_path(source: QRectF, target: QRectF, slot: int) -> QPainterPath:
+        start = QPointF(source.center().x(), source.bottom())
+        end = QPointF(target.center().x() + (slot - 0.5) * 40, target.top())
+        middle_y = (start.y() + end.y()) / 2
+        path = QPainterPath(start)
+        path.lineTo(start.x(), middle_y)
+        path.lineTo(end.x(), middle_y)
+        path.lineTo(end)
+        return path
