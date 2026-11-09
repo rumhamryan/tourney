@@ -1,6 +1,6 @@
 [project]
 name = "tourney"
-version = "0.1.29"
+version = "0.1.30"
 description = "Program to run brackets or a chipe tournament."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,8 +16,9 @@ dev = [
     "mypy",
     "pytest",
     "pytest-asyncio",
-    "pytest-cov",
+    "pytest-cov>=7.0.0",
     "pytest-mock",
+    "pytest-xdist>=3.8.0",
     "ruff",
     "pre-commit",
     "types-requests",
@@ -32,8 +33,9 @@ dev = [
     "mypy>=1.10.0",
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
-    "pytest-cov>=5.0.0",
+    "pytest-cov>=7.0.0",
     "pytest-mock>=3.14.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.4.2",
     "pre-commit>=3.7.0",
     "types-requests",
@@ -73,10 +75,14 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q --cov=src"
+addopts = "-ra -q --cov=src -n 4 --dist=worksteal"
 testpaths = [
     "tests",
 ]
 pythonpath = ["src"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.coverage.run]
+# Python 3.12's monitoring API avoids tracing already-covered lines repeatedly.
+core = "sysmon"

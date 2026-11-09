@@ -23,6 +23,26 @@ The app is unsigned, so Windows may show a warning when you download or open it.
 | **Double Elimination** | Two losses eliminate a player. | A first loss moves a player into the losers' bracket. The winners' and losers' finalists meet in the grand final. |
 | **Chip Tournament** | Each loss costs one chip. A player with no chips is out. | Players are randomly paired each round. The last player with chips wins. |
 
+## Set up your event
+
+1. Choose a format from the main menu.
+2. Set **Number of tables** to the number you have available. Tourney assigns
+   matches to those tables automatically.
+3. Enter each player's name and click **Add**, or use **Import Players…** to
+   load a list. You need **2–32 players**. For a chip tournament, also enter
+   each player's starting chip count, from **1 to 10**.
+4. Review the list and click **Start**. Choose where to save the tournament's
+   `.json` file, then begin play.
+
+The suggested filename includes the date, format, and player count, such as
+`20261108_single_elimination_32_players.json`. Keep this file somewhere you
+can find again; Tourney saves results to it throughout the event.
+
+To remove players before starting, select their names and click **Remove
+Selected**. In chip setup, click a player to edit their name or starting chips,
+then click **Update Player**. Add any name still in the entry field before
+clicking Start.
+
 ### Import players from a TXT or CSV file
 
 Click **Import Players…** on any setup page and choose a `.txt` or `.csv` file.
@@ -50,8 +70,35 @@ Charlie,4
 Derek,3
 ```
 
+The header is optional. Use whole-number chip counts from **1 to 10**; leave
+the count blank to use **4**. Save the file as **UTF-8** with either a `.txt`
+or `.csv` extension.
+
+The import result reports how many players were added and which lines were
+skipped. Duplicate names, blank names, invalid chip counts, extra columns, and
+players beyond the 32-player limit are skipped while usable players are imported.
+Review the result and the player list before starting.
+
 An unreadable file, unsupported encoding, broken CSV quoting, or a file with no
 usable players leaves your existing list unchanged.
+
+## Run an elimination bracket
+
+Look for matches showing **In progress** and a green table number. Send those
+players to their assigned tables. When a match finishes, click its card and
+select the winner's name in the result dialog. Tourney advances the winner,
+updates the bracket, and assigns available matches to free tables.
+
+![Double elimination bracket with assigned tables and a dialog for selecting the match winner](docs/images/double_elimination_tournament.png)
+
+## Run a chip tournament
+
+Click an active matchup and select the winner. The loser loses **one chip**;
+the winner keeps their current chips. A player who reaches zero is marked
+**Eliminated**. After every match in the round finishes, Tourney creates the
+next round's pairings automatically.
+
+![Chip tournament showing the leaderboard, assigned tables, waiting matches, and winner selection](docs/images/chip_tournament.png)
 
 ## Correct a result
 

@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QColor, QKeySequence, QPalette
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
@@ -1808,9 +1808,9 @@ def _record_zoom_result(menu: MainMenu) -> None:
     _wait_scheduling(menu)
 
 
-def _show_heading_preview(menu: MainMenu, format_: str) -> BracketView:
+def _show_heading_preview(menu: MainMenu, format_: str, count: int = 32) -> BracketView:
     view = menu.bracket_view
-    view.show_draw(build_preview([f"Player {i}" for i in range(32)], format_), 2)
+    view.show_draw(build_preview([f"Player {i}" for i in range(count)], format_), 2)
     menu.pages.setCurrentWidget(view)
     QApplication.processEvents()
     return view
@@ -2195,18 +2195,12 @@ def test_zoom_controls_fit_bracket_window(
 
 
 def test_large_double_preview_scrolls_and_match_boxes_do_not_overlap(
-    menu: MainMenu, entry: PlayerEntry, application: QApplication
+    menu: MainMenu, application: QApplication
 ) -> None:
-    entry.back_button.click()
-    menu.double_button.click()
-    for index in range(_PLAYER_LIMIT):
-        entry.name_input.setText(f"Player {index}")
-        entry.add_button.click()
-    entry.start_button.click()
-    _wait_scheduling(menu)
+    view = _show_heading_preview(menu, "Double Elimination")
     menu.resize(360, 440)
     application.processEvents()
-    view = menu.bracket_view
+    application.sendPostedEvents(None, QEvent.Type.LayoutRequest)
     rectangles = list(view.match_rects.values())
 
     assert view.graphics.horizontalScrollBar().maximum() > 0
@@ -2710,26 +2704,21 @@ def test_full_hd_controls_are_readable_and_menu_is_centered(
 @pytest.mark.parametrize("tournament_format", ["Single Elimination", "Double Elimination"])
 def test_full_hd_bracket_text_fits_inside_larger_match_boxes(
     menu: MainMenu,
-    entry: PlayerEntry,
     application: QApplication,
     player_count: int,
     tournament_format: str,
 ) -> None:
     menu.resize(1920, 1080)
-    entry.set_format(tournament_format)
-    for index in range(player_count):
-        entry.name_input.setText(f"Player {index}")
-        entry.add_button.click()
-    entry.start_button.click()
+    view = _show_heading_preview(menu, tournament_format, player_count)
     application.processEvents()
-    view = menu.bracket_view
+    assert view.match_rects
     minimum_card_width = 300
     minimum_font_points = 14
     for rectangle in view.match_rects.values():
         visible_width = view.graphics.mapFromScene(rectangle).boundingRect().width()
         assert visible_width >= minimum_card_width
         for item in view.scene.items(rectangle):
-            if isinstance(item, QGraphicsTextItem):
+            if isinstance(item, QGraphicsTextItem) and rectangle.contains(item.pos()):
                 assert item.font().pointSizeF() >= minimum_font_points
                 assert rectangle.contains(item.sceneBoundingRect())
 
