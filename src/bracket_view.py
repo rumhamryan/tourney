@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import (
+    QAction,
     QColor,
     QFont,
     QFontMetrics,
@@ -227,10 +228,11 @@ class BracketView(QWidget):
         self.back_button.setMinimumHeight(40)
         self.back_button.setAutoDefault(False)
         self.back_button.clicked.connect(self.back_requested.emit)
-        self.save_button = QPushButton("&Save As…")
-        self.save_button.setMinimumHeight(40)
-        self.save_button.setAutoDefault(False)
-        self.save_button.clicked.connect(self.save_requested.emit)
+        self.save_action = QAction("Save As…", self)
+        self.save_action.setShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs))
+        self.save_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.save_action.triggered.connect(self.save_requested.emit)
+        self.addAction(self.save_action)
         self.undo_button = QPushButton("&Undo Last Result")
         self.undo_button.setAutoDefault(False)
         self.undo_button.setEnabled(False)
@@ -250,7 +252,6 @@ class BracketView(QWidget):
         layout.addWidget(self.file_label)
         layout.addWidget(self.graphics, 1)
         actions = QHBoxLayout()
-        actions.addWidget(self.save_button)
         actions.addWidget(self.undo_button)
         actions.addWidget(self.back_button)
         layout.addLayout(actions)
@@ -265,7 +266,7 @@ class BracketView(QWidget):
         self._page_layout.setContentsMargins(margin, margin, margin, margin)
         self._page_layout.setSpacing(round(LAYOUT_SPACING * scale))
         self.status_label.setMinimumHeight(round(32 * scale))
-        for button in [self.save_button, self.undo_button, self.back_button]:
+        for button in [self.undo_button, self.back_button]:
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
         self.zoom_slider.setMinimumWidth(round(120 * scale))
         self.zoom_slider.setMaximumWidth(round(240 * scale))
@@ -289,17 +290,13 @@ class BracketView(QWidget):
         self.zoom_slider.setValue(_DEFAULT_ZOOM)
 
     def _connect_keyboard(self) -> None:
-        for button in [self.save_button, self.undo_button, self.back_button]:
+        for button in [self.undo_button, self.back_button]:
             self._button_shortcuts(button)
-        shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs), self)
-        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        shortcut.activated.connect(self.save_button.click)
         undo = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self)
         undo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         undo.activated.connect(self.undo_button.click)
         self.setTabOrder(self.zoom_slider, self.graphics)
-        self.setTabOrder(self.graphics, self.save_button)
-        self.setTabOrder(self.save_button, self.undo_button)
+        self.setTabOrder(self.graphics, self.undo_button)
         self.setTabOrder(self.undo_button, self.back_button)
         self.setTabOrder(self.back_button, self.zoom_slider)
 

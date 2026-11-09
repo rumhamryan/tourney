@@ -545,7 +545,7 @@ class MainMenu(QDialog):
         editable = self.document is not None
         for view in (self.bracket_view, self.chip_view):
             view.read_only = not editable
-            view.save_button.setEnabled(editable and not busy)
+            view.save_action.setEnabled(editable and not busy)
             view.undo_button.setEnabled(bool(self.document and self.document.history) and not busy)
             view.back_button.setEnabled(not busy)
             text = (

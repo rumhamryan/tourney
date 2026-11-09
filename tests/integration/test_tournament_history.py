@@ -182,7 +182,7 @@ def test_legacy_file_is_exact_and_viewing_only(window: MainMenu, tmp_path: Path)
         window._load_tournament()
     window._record_result("W1", 0)
     assert window.tournament == state
-    assert not window.bracket_view.save_button.isEnabled()
+    assert not window.bracket_view.save_action.isEnabled()
     assert not window.bracket_view.undo_button.isEnabled()
     assert "Viewing only" in window.bracket_view.file_label.text()
 
@@ -279,7 +279,7 @@ def test_pending_schedule_blocks_actions_and_failure_retains_state(
         window._record_result("W1", 0)
         try:
             assert window.bracket_view.scheduling
-            assert not window.bracket_view.save_button.isEnabled()
+            assert not window.bracket_view.save_action.isEnabled()
             assert not window.bracket_view.undo_button.isEnabled()
             assert not window.bracket_view.back_button.isEnabled()
             window._record_result("W2", 2)
@@ -293,7 +293,7 @@ def test_pending_schedule_blocks_actions_and_failure_retains_state(
     warning.assert_called_once()
     assert window.tournament is original
     assert path.read_bytes() == contents
-    assert window.bracket_view.save_button.isEnabled()
+    assert window.bracket_view.save_action.isEnabled()
 
 
 def test_stale_failure_does_not_cancel_current_transaction(

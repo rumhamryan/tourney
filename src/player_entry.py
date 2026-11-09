@@ -287,8 +287,9 @@ class PlayerEntry(QWidget):
         self.name_input.setMinimumHeight(round(INPUT_HEIGHT * scale))
         self.chip_count_input.setMinimumHeight(round(INPUT_HEIGHT * scale))
         self.table_count_input.setMinimumHeight(round(INPUT_HEIGHT * scale))
-        self.table_count_input.setMinimumWidth(round(200 * scale))
+        self.table_count_input.setMinimumWidth(round(160 * scale))
         self.add_button.setMinimumWidth(round(144 * scale))
+        self.import_button.setMinimumWidth(round(self.import_button.sizeHint().width() * 1.25))
         self.feedback_label.setMinimumHeight(round(32 * scale))
         for button in [
             self.add_button,
@@ -309,6 +310,7 @@ class PlayerEntry(QWidget):
 
     def _table_row(self) -> QHBoxLayout:
         label = QLabel("Number of &tables:")
+        label.setWordWrap(True)
         label.setBuddy(self.table_count_input)
         row = QHBoxLayout()
         row.addWidget(label)

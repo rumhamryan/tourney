@@ -255,12 +255,12 @@ operations automatically update it. The file path appears on the tournament scre
 If saving or scheduling fails, the previous result, history, and file remain unchanged;
 resolve the error and try again.
 
-Click **Save As…** to copy the complete tournament and undo history to another file.
+Press **Ctrl+Shift+S** on a tournament page to use Save As and copy the complete
+tournament and undo history to another file.
 After a successful save, that file becomes the active location for automatic saves.
 Use **Load Tournament** on the main menu to restore a tournament. Loading preserves the
 exact draw, table assignments, and undo history; it never reshuffles players or
-redraws chip rounds. Ctrl+Shift+S opens Save As on the
-tournament screen, and Ctrl+O opens Load from the main menu. macOS uses the platform's
+redraws chip rounds. Ctrl+O opens Load from the main menu. macOS uses the platform's
 standard shortcuts.
 
 Use **Undo Last Result** or Ctrl+Z to restore the state before the most recent

@@ -348,7 +348,7 @@ def test_chip_save_and_load_resume_partial_round_without_redrawing(
     original = menu.chip_tournament
     path = tmp_path / "chips.json"
     with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
-        menu.chip_view.save_button.click()
+        menu.chip_view.save_action.trigger()
     loaded = read_tournament_file(path)
     assert isinstance(loaded, TournamentDocument)
     assert loaded.state == original
@@ -414,7 +414,6 @@ def test_start_assigns_tables_and_recording_winner_refills_them(
     assert menu.tournament is not None and menu.tournament.draw_locked
     assert menu.tournament.progress == (MatchProgress("W1", "in_progress", table_number=1),)
     assert [button.text() for button in menu.bracket_view.findChildren(QPushButton)] == [
-        "&Save As…",
         "&Undo Last Result",
         "&Back to Menu",
     ]
@@ -1936,7 +1935,7 @@ def test_zoom_preserved_by_results_undo_save_as_and_resize(
     with patch(
         "main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / "copy.json"), "")
     ):
-        view.save_button.click()
+        view.save_action.trigger()
     assert view.zoom_slider.value() == percentage
     for width, height in [(640, 600), (1920, 1080)]:
         menu.resize(width, height)
@@ -2240,7 +2239,7 @@ def test_save_as_writes_exact_draw_and_setup_order(
         entry.start_button.click()
     path = tmp_path / "my bracket.json"
     with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
-        menu.bracket_view.save_button.click()
+        menu.bracket_view.save_action.trigger()
     loaded = load_tournament(path)
     assert loaded.draw == menu.bracket_view.draw
     assert loaded.entry_names == tuple(names)
@@ -2285,9 +2284,9 @@ def test_legacy_progress_cannot_be_saved_as_new_document(
     with patch("main_menu.QFileDialog.getOpenFileName", return_value=(str(original), "")):
         menu.load_button.click()
     with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(copy), "")):
-        menu.bracket_view.save_button.click()
+        menu.bracket_view.save_action.trigger()
     assert not copy.exists()
-    assert not menu.bracket_view.save_button.isEnabled()
+    assert not menu.bracket_view.save_action.isEnabled()
     assert menu.tournament == saved_state
 
 
@@ -2368,14 +2367,14 @@ def test_save_cancel_and_write_failure_keep_draw(
         patch("main_menu.QFileDialog.getSaveFileName", return_value=("", "")),
         patch("main_menu.save_document") as save,
     ):
-        menu.bracket_view.save_button.click()
+        menu.bracket_view.save_action.trigger()
     save.assert_not_called()
     with (
         patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / "a"), "")),
         patch("main_menu.save_document", side_effect=OSError("disk full")),
         patch("main_menu.MainMenu._show_warning") as warning,
     ):
-        menu.bracket_view.save_button.click()
+        menu.bracket_view.save_action.trigger()
     warning.assert_called_once()
     assert menu.tournament is original
     assert menu.bracket_view.isVisible()
@@ -2392,7 +2391,7 @@ def test_save_as_ensures_json_extension(
     with patch(
         "main_menu.QFileDialog.getSaveFileName", return_value=(str(tmp_path / filename), "")
     ):
-        menu.bracket_view.save_button.click()
+        menu.bracket_view.save_action.trigger()
     expected = filename if filename.lower().endswith(".json") else filename + ".json"
     assert load_tournament(tmp_path / expected) == menu.tournament
 
@@ -2419,18 +2418,28 @@ def test_load_shortcut_is_only_available_on_main_menu(
         assert not menu.load_button.isVisible()
 
 
-def test_save_shortcut_works_on_bracket(menu: MainMenu, entry: PlayerEntry, tmp_path: Path) -> None:
+@pytest.mark.parametrize("format_", ["Single Elimination", "Double Elimination", "Chip Tournament"])
+def test_save_shortcut_works_without_a_save_button(
+    menu: MainMenu, entry: PlayerEntry, tmp_path: Path, format_: str
+) -> None:
+    entry.set_format(format_)
     for name in ["Alice", "Bob"]:
         entry.name_input.setText(name)
+        if format_ == "Chip Tournament":
+            entry.chip_count_input.setText("4")
         entry.add_button.click()
     entry.start_button.click()
-    QApplication.processEvents()
+    _wait_scheduling(menu)
+    view = menu.chip_view if format_ == "Chip Tournament" else menu.bracket_view
+    assert all(button.text() != "&Save As…" for button in view.findChildren(QPushButton))
     path = tmp_path / "shortcut.json"
     with patch("main_menu.QFileDialog.getSaveFileName", return_value=(str(path), "")):
-        QTest.keySequence(
-            menu.bracket_view.back_button, QKeySequence(QKeySequence.StandardKey.SaveAs)
-        )
-    assert load_tournament(path) == menu.tournament
+        QTest.keySequence(view.back_button, QKeySequence(QKeySequence.StandardKey.SaveAs))
+    loaded = read_tournament_file(path)
+    assert isinstance(loaded, TournamentDocument)
+    assert loaded.state == (
+        menu.chip_tournament if format_ == "Chip Tournament" else menu.tournament
+    )
 
 
 @pytest.mark.parametrize("answer", [QMessageBox.StandardButton.Yes, QMessageBox.StandardButton.No])
@@ -2449,7 +2458,7 @@ def test_adding_json_extension_confirms_overwrite(
         ),
         patch("main_menu.MainMenu._confirm_action", return_value=answer) as question,
     ):
-        menu.bracket_view.save_button.click()
+        menu.bracket_view.save_action.trigger()
     question.assert_called_once()
     if answer == QMessageBox.StandardButton.Yes:
         assert load_tournament(path) == menu.tournament
@@ -2519,7 +2528,7 @@ def test_existing_json_file_uses_explicit_overwrite_confirmation(
             "main_menu.MainMenu._confirm_action", return_value=QMessageBox.StandardButton.Yes
         ) as question,
     ):
-        menu.bracket_view.save_button.click()
+        menu.bracket_view.save_action.trigger()
     question.assert_called_once()
     assert load_tournament(path) == menu.tournament
 

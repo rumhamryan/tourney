@@ -1,7 +1,7 @@
 """A live chip leaderboard beside a responsive grid of round matchups."""
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QKeySequence, QResizeEvent, QShortcut
+from PySide6.QtGui import QAction, QFont, QFontMetrics, QKeySequence, QResizeEvent, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -188,12 +188,10 @@ class ChipView(QWidget):
         self.file_label.setWordWrap(True)
         self.status_label.setWordWrap(True)
         self.back_button = QPushButton("&Back to Menu")
-        self.save_button = QPushButton("&Save As…")
         self.undo_button = QPushButton("&Undo Last Result")
         self.undo_button.setEnabled(False)
         self.undo_button.clicked.connect(self.undo_requested.emit)
         self.back_button.clicked.connect(self.back_requested.emit)
-        self.save_button.clicked.connect(self.save_requested.emit)
         self._build_layout()
         self._connect_keyboard()
 
@@ -213,7 +211,6 @@ class ChipView(QWidget):
         self.splitter.setSizes([350, 1050])
         self._layout.addWidget(self.splitter, 1)
         footer = QHBoxLayout()
-        footer.addWidget(self.save_button)
         footer.addWidget(self.undo_button)
         footer.addWidget(self.back_button)
         self._layout.addLayout(footer)
@@ -256,11 +253,13 @@ class ChipView(QWidget):
         self.splitter.addWidget(pane)
 
     def _connect_keyboard(self) -> None:
-        for button in [self.save_button, self.undo_button, self.back_button]:
+        for button in [self.undo_button, self.back_button]:
             _keyboard_button(button)
-        shortcut = QShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs), self)
-        shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        shortcut.activated.connect(self.save_button.click)
+        self.save_action = QAction("Save As…", self)
+        self.save_action.setShortcut(QKeySequence(QKeySequence.StandardKey.SaveAs))
+        self.save_action.setShortcutContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self.save_action.triggered.connect(self.save_requested.emit)
+        self.addAction(self.save_action)
         undo = QShortcut(QKeySequence(QKeySequence.StandardKey.Undo), self)
         undo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         undo.activated.connect(self.undo_button.click)
@@ -278,7 +277,7 @@ class ChipView(QWidget):
         self._layout.setSpacing(round(LAYOUT_SPACING * scale))
         self.leaderboard_pane.setMinimumWidth(round(240 * scale))
         self.match_scroll.setMinimumWidth(round(400 * scale))
-        for button in [self.save_button, self.undo_button, self.back_button]:
+        for button in [self.undo_button, self.back_button]:
             button.setMinimumHeight(round(BUTTON_HEIGHT * scale))
         for card in self.match_cards.values():
             card.setMinimumWidth(round(_CARD_WIDTH * scale))
