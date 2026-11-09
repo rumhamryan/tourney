@@ -15,6 +15,9 @@ from tournament_state import (
     validate_tournament,
 )
 
+_LARGE_PLAYER_COUNT = 32
+_CONFLICT_CHECK_SOLVER_LIMIT = 0.01
+
 
 def _state(
     count: int, tables: int, tournament_format: str = "Single Elimination"
@@ -136,8 +139,15 @@ def test_nonoptimal_solver_status_uses_critical_path_fallback(status: str) -> No
 
 @pytest.mark.parametrize("tournament_format", ["Single Elimination", "Double Elimination"])
 @pytest.mark.parametrize("tables", [1, 6, 2147483647])
-def test_large_bracket_finishes_without_conflicts(tournament_format: str, tables: int) -> None:
-    state = _state(32, tables, tournament_format)
+@pytest.mark.parametrize("count", [8, _LARGE_PLAYER_COUNT])
+def test_bracket_finishes_without_conflicts(
+    tournament_format: str, tables: int, count: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if count == _LARGE_PLAYER_COUNT:
+        # These runs check safety and completion, including the real solver's fallback.
+        # Small exhaustive optimality checks and full 8-player runs keep the normal limit.
+        monkeypatch.setattr("table_scheduler._SOLVER_TIME_LIMIT", _CONFLICT_CHECK_SOLVER_LIMIT)
+    state = _state(count, tables, tournament_format)
     for _ in range(len(state.draw.matches) + 1):
         state = schedule_tables(state).state
         active = [item for item in state.progress if item.status == "in_progress"]
@@ -153,7 +163,7 @@ def test_large_bracket_finishes_without_conflicts(tournament_format: str, tables
         validate_tournament(state)
     else:
         pytest.fail("Tournament did not finish")
-    expected = 31 if tournament_format == "Single Elimination" else 62
+    expected = (count - 1) * (1 if tournament_format == "Single Elimination" else 2)
     assert sum(item.status == "completed" for item in state.progress) == expected
     assert schedule_tables(state).state == state
 

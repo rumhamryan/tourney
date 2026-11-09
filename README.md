@@ -385,6 +385,13 @@ uv run pre-commit run --all-files
 
 ### Individual Tools
 - **Test**: `uv run pytest`
+- **Unit tests**: `uv run pytest tests/unit --durations=10` (target: under 30 seconds)
 - **Lint**: `uv run ruff check .`
 - **Format**: `uv run ruff format .`
 - **Type Check**: `uv run mypy .`
+
+The 32-player scheduling simulations use the real solver with a 10-millisecond
+budget per dispatch to check table/player conflicts and tournament completion,
+including fallback scheduling. Smaller exhaustive optimality checks and complete
+8-player simulations retain the normal one-second budget. The application's
+solver limit and the default coverage settings are unchanged.
